@@ -19,6 +19,7 @@ import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { ProjectActionsDropdown } from '@/components/ProjectActionsDropdown';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { CurrencyConverterWidget } from '@/components/CurrencyConverterWidget';
 import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab';
 import {
   CounterOfferSummary,
@@ -605,6 +606,9 @@ export function FreelancerDashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Multi-Currency Portfolio Tracker (#307) */}
+            <CurrencyConverterWidget />
 
             {/* Header & Filter Controls */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">

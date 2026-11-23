@@ -33,6 +33,7 @@ import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
 import { AccountsPayableExportModal } from '@/components/AccountsPayableExportModal';
 import { GasFeeEstimatorWidget } from '@/components/GasFeeEstimatorWidget';
 import { BlendYieldVisualizer } from '@/components/BlendYieldVisualizer';
+import { CurrencyConverterWidget } from '@/components/CurrencyConverterWidget';
 import { BLEND_ALLOCATION_RATIO } from '@/lib/blend-yield';
 import {
   createProjectOnChain,
@@ -891,9 +892,10 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
 
         {/* Network fee gauge and token price alerts (#256, #253) */}
         {activeTab === 'projects' && (
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-3">
             <GasFeeEstimatorWidget onFeeSelected={(feeStroops) => setSorobanBaseFee(feeStroops)} />
             <TokenPriceAlertWidget />
+            <CurrencyConverterWidget />
           </div>
         )}
 
