@@ -20,7 +20,7 @@ import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab'
 
 export function FreelancerDashboard() {
   const router = useRouter();
-  const { address } = useWalletStore();
+  const { address, activeRole } = useWalletStore();
   const [activeTab, setActiveTab] = usePersistentTab<'explore' | 'proposals' | 'jobs'>({
     key: 'freelancer_active_tab',
     defaultTab: 'explore',

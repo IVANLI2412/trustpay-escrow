@@ -1,5 +1,12 @@
 'use client';
 
+import { celebrateEscrow } from '@/lib/confetti';
+import { showSorobanErrorToast } from '@/components/SorobanErrorToast';
+import { NotificationScheduleModal } from '@/components/NotificationScheduleModal';
+import { StarredFreelancersList } from '@/components/StarredFreelancersList';
+import { TokenPriceAlertWidget } from '@/components/TokenPriceAlertWidget';
+import { useStarredFreelancers } from '@/hooks/useStarredFreelancers';
+
 import React, { useState, useEffect } from 'react';
 import NumberRoll from './NumberRoll';
 import { toast } from 'sonner';
@@ -30,7 +37,6 @@ import {
   assignFreelancerOnChain,
   getStellarExplorerUrl,
   DEFAULT_ESCROW_CONTRACT_ID,
-  showSorobanErrorToast,
   setSorobanBaseFee,
 } from '@/lib/soroban';
 
@@ -41,10 +47,12 @@ export interface ClientDashboardProps {
 export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProps) {
   const router = useRouter();
   const { address } = useWalletStore();
-  const [activeTab, setActiveTab] = usePersistentTab<'projects' | 'create' | 'applicants'>({
+  const activeWalletAddress = useActiveWalletAddress();
+  const { starred, isStarred, toggle: toggleStarred, setNotes: setStarredNotes } = useStarredFreelancers(activeWalletAddress);
+  const [activeTab, setActiveTab] = usePersistentTab<'projects' | 'create' | 'applicants' | 'saved'>({
     key: 'client_active_tab',
     defaultTab,
-    allowedTabs: ['projects', 'create', 'applicants'] as const,
+    allowedTabs: ['projects', 'create', 'applicants', 'saved'] as const,
     walletAddress: address,
   });
   const [loading, setLoading] = useState(true);
@@ -310,6 +318,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
           yieldEnabled: Boolean(project.yield_enabled),
         });
         onChainId = chainRes.onChainProjectId ? Number(chainRes.onChainProjectId) : 1;
+        celebrateEscrow();
         toast.success(`Escrow project #${onChainId} locked on Stellar!`);
       } catch (chainErr: any) {
         toast.error(`On-chain escrow initialization failed: ${chainErr.message || chainErr}`);
@@ -519,6 +528,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
 
         onChainProjectId = chainRes.onChainProjectId ? Number(chainRes.onChainProjectId) : 1;
         contractId = DEFAULT_ESCROW_CONTRACT_ID;
+        celebrateEscrow();
         toast.success(`Escrow project #${onChainProjectId} locked on Stellar!`);
       }
 
@@ -676,15 +686,8 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
         {/* Network fee gauge and token price alerts (#256, #253) */}
         {activeTab === 'projects' && (
           <div className="grid gap-4 lg:grid-cols-2">
-            <GasFeeEstimatorWidget onChange={(selection) => setSorobanBaseFee(selection.feeStroops)} />
-            <TokenPriceAlertWidget
-              onFundNow={(alert, price) => {
-                toast.success(
-                  `Funding at ${alert.token} $${price?.toFixed(4) ?? alert.target}. Choose a project to fund.`
-                );
-                setActiveTab('create');
-              }}
-            />
+            <GasFeeEstimatorWidget onFeeSelected={setSorobanBaseFee} />
+            <TokenPriceAlertWidget />
           </div>
         )}
 

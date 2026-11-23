@@ -1,5 +1,7 @@
 'use client';
 
+import { useEscapeKey } from '@/hooks/useEscapeKey';
+
 import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';

@@ -3,11 +3,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useWalletStore } from '@/store/walletStore';
+import { formatAttachmentLine, hasSubtleCrypto, sha256Hex, truncateHash } from '@/lib/checksum';
 import { authFetch } from '@/lib/api';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { submitMilestoneOnChain, type TxStage } from '@/lib/soroban';
 import {
   deliverableSubmissionSchema,
+  MAX_DELIVERABLE_FILES,
   parseGitHubPullRequestUrl,
   verifyGitHubPullRequest,
   type GitHubPrVerification,
@@ -17,7 +19,6 @@ import { ImageLightboxModal } from './ImageLightboxModal';
 import { MarkdownDeliverableEditor } from './MarkdownDeliverableEditor';
 import { DeliverableFolderTree } from './DeliverableFolderTree';
 
-const MAX_FILES = 20;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 interface AttachedFile {
@@ -26,7 +27,7 @@ interface AttachedFile {
   size: number;
   type: string;
   progress: number;
-  previewUrl?: string;
+  objectUrl?: string;
   bytes?: ArrayBuffer;
   /** SHA-256 of the file, computed in the browser before upload (#254). */
   sha256?: string;
@@ -96,7 +97,9 @@ export function MilestoneSubmitModal({
   const [submitting, setSubmitting] = useState(false);
   const [txStatus, setTxStatus] = useState<{ stage: TxStage | 'validating'; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const objectUrlsRef = useRef<string[]>([]);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const objectUrlsRef = useRef(new Set<string>());
+  const nextFileId = useRef(0);
 
   useEffect(() => () => {
     objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -113,27 +116,27 @@ export function MilestoneSubmitModal({
     const rejected = Array.from(incoming).length - candidates.length;
     if (rejected > 0) toast.error(`${rejected} file(s) exceeded the 25 MB limit.`);
 
-    const slots = MAX_FILES - files.length;
+    const slots = MAX_DELIVERABLE_FILES - files.length;
     if (slots <= 0) {
-      toast.error(`You can attach at most ${MAX_FILES} files.`);
+      toast.error(`You can attach at most ${MAX_DELIVERABLE_FILES} files.`);
       return;
     }
     const accepted = candidates.slice(0, slots);
     if (candidates.length > slots) toast.error(`Only the first ${slots} file(s) were attached.`);
 
-    const entries: AttachedFile[] = accepted.map((file, index) => {
-      let previewUrl: string | undefined;
-      if (file.type.startsWith('image/') && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-        previewUrl = URL.createObjectURL(file);
-        objectUrlsRef.current.push(previewUrl);
+    const entries: AttachedFile[] = accepted.map((file) => {
+      let objectUrl: string | undefined;
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        objectUrl = URL.createObjectURL(file);
+        objectUrlsRef.current.add(objectUrl);
       }
       return {
-        id: `${Date.now()}-${index}-${file.name}`,
-        name: file.name,
+        id: `attachment-${++nextFileId.current}`,
+        name: file.webkitRelativePath || file.name,
         size: file.size,
         type: file.type,
         progress: 0,
-        previewUrl,
+        objectUrl,
       };
     });
     setFiles((previous) => [...previous, ...entries]);
@@ -168,11 +171,12 @@ export function MilestoneSubmitModal({
   };
 
   const removeFile = (id: string) => {
-    setFiles((previous) => {
-      const target = previous.find((item) => item.id === id);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
-      return previous.filter((item) => item.id !== id);
-    });
+    const target = files.find((file) => file.id === id);
+    if (target?.objectUrl) {
+      URL.revokeObjectURL(target.objectUrl);
+      objectUrlsRef.current.delete(target.objectUrl);
+    }
+    setFiles((previous) => previous.filter((file) => file.id !== id));
   };
 
   const runVerification = async (url: string) => {
@@ -279,6 +283,8 @@ export function MilestoneSubmitModal({
       setNotes('');
       setPrLinks([]);
       setVerifications({});
+      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      objectUrlsRef.current.clear();
       setFiles([]);
       setTxStatus(null);
       onClose();
@@ -438,69 +444,66 @@ export function MilestoneSubmitModal({
                   event.target.value = '';
                 }}
               />
-              <p className="mt-2 text-[10px] text-[#71717a]">Up to {MAX_FILES} files, 25 MB each</p>
+              <button
+                type="button"
+                onClick={() => folderInputRef.current?.click()}
+                className="ml-2 mt-2 px-4 py-1.5 text-xs font-bold rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-white border border-[#3f3f46]"
+              >
+                Browse Folder
+              </button>
+              <input
+                ref={folderInputRef}
+                aria-label="Browse Folder"
+                type="file"
+                {...{ webkitdirectory: '' }}
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+              <p className="mt-2 text-[10px] text-[#71717a]">Up to {MAX_DELIVERABLE_FILES} files, 25 MB each</p>
             </div>
 
             {files.length > 0 && (
-              <ul className="space-y-2" data-testid="attachment-list">
-                {files.map((file) => (
-                  <li key={file.id} className="flex items-center gap-3 bg-[#1c1c20] border border-[#27272a] rounded-xl p-2.5">
-                    {file.previewUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => setLightbox({ url: file.previewUrl!, name: file.name })}
-                        className="shrink-0"
-                        title={`Preview ${file.name}`}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={file.previewUrl} alt={file.name} className="w-12 h-12 object-cover rounded-lg border border-[#333338]" />
-                      </button>
-                    ) : (
-                      <span className="w-12 h-12 rounded-lg bg-[#27272a] flex items-center justify-center text-lg shrink-0">📄</span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-[#e4e4e7] truncate">{file.name}</span>
-                        <span className="text-[10px] text-[#71717a] shrink-0">{formatBytes(file.size)}</span>
-                      </div>
-                      <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#27272a] overflow-hidden">
-                        <div
-                          data-testid={`upload-progress-${file.id}`}
-                          className={`h-full rounded-full transition-all ${file.error ? 'bg-red-500' : 'bg-indigo-500'}`}
-                          style={{ width: `${file.progress}%` }}
-                        />
-                      </div>
-                      <p className={`mt-1 text-[10px] ${file.error ? 'text-red-400' : 'text-[#71717a]'}`}>
-                        {file.error || (file.progress === 100 ? 'Ready' : `Processing ${file.progress}%`)}
-                      </p>
-                      {file.sha256 && (
-                        <p
-                          className="mt-0.5 font-mono text-[10px] text-emerald-400"
-                          title={file.sha256}
-                          data-testid={`attachment-hash-${file.id}`}
-                        >
-                          {truncateHash(file.sha256)}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeFile(file.id)}
-                      aria-label={`Remove ${file.name}`}
-                      className="text-[#71717a] hover:text-red-400 text-xs shrink-0"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {files.length > 0 && (
-              <div className="mt-3">
+              <div data-testid="attachment-list">
                 <DeliverableFolderTree
-                  files={files.map((f) => ({ path: f.name, size: f.size, url: f.previewUrl }))}
-                  title="Deliverable Files Hierarchy"
+                  files={files.map((file) => ({ id: file.id, path: file.name, size: file.size, url: file.objectUrl }))}
+                  renderFileDetails={(node) => {
+                    const file = files.find((attachment) => attachment.id === node.id);
+                    if (!file) return null;
+                    return (
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px]">
+                        <div
+                          role="progressbar"
+                          aria-label={`Processing ${file.name}`}
+                          aria-valuenow={file.progress}
+                          className="h-1 w-12 overflow-hidden rounded-full bg-[#27272a]"
+                        >
+                          <div
+                            data-testid={`upload-progress-${file.id}`}
+                            className={`h-full ${file.error ? 'bg-red-500' : 'bg-indigo-500'}`}
+                            style={{ width: `${file.progress}%` }}
+                          />
+                        </div>
+                        <span className={file.error ? 'text-red-400' : 'text-slate-400'}>
+                          {file.error || (file.progress === 100 ? 'Ready' : `Processing ${file.progress}%`)}
+                        </span>
+                        {file.sha256 && (
+                          <span className="font-mono text-emerald-400" title={file.sha256} data-testid={`attachment-hash-${file.id}`}>
+                            {truncateHash(file.sha256)}
+                          </span>
+                        )}
+                        {file.type.startsWith('image/') && file.objectUrl && (
+                          <button type="button" onClick={() => setLightbox({ url: file.objectUrl!, name: file.name })}
+                            className="text-blue-300 hover:underline" aria-label={`Preview ${file.name}`}>Preview</button>
+                        )}
+                        <button type="button" onClick={() => removeFile(file.id)}
+                          className="text-slate-400 hover:text-red-400" aria-label={`Remove ${file.name}`}>Remove</button>
+                      </div>
+                    );
+                  }}
                 />
               </div>
             )}

@@ -7,6 +7,8 @@ import { FreelancerDashboard } from './FreelancerDashboard';
 import { ArbiterDashboard } from './ArbiterDashboard';
 import { RoleSwitcher } from './RoleSwitcher';
 import WalletConnect from './WalletConnect';
+import Link from 'next/link';
+import { OrgWalletSwitcher } from './OrgWalletSwitcher';
 import NotificationBell from './NotificationBell';
 import { CryptoId } from '@/components/ui/CryptoId';
 
@@ -68,6 +70,7 @@ export function DashboardRouter() {
 
         {/* Right Section: Notification Bell & Mode Switcher */}
         <div className="flex items-center space-x-4">
+          <Link href="/analytics" className="text-blue-400 hover:underline">Analytics</Link>
           <OrgWalletSwitcher />
           <NotificationBell />
 

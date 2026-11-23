@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
+import { ZkAttestationBadge } from './ZkAttestationBadge';
+import { AddressBadge } from './AddressBadge';
 import { toast } from 'sonner';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { EmbeddedDemoSandbox } from './EmbeddedDemoSandbox';
@@ -38,8 +40,7 @@ export interface ApplicantCardProps {
   onToggleStar?: (applicant: ApplicantCardData) => void;
 }
 
-export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenChat, isProcessing = false }: ApplicantCardProps) {
-  const [copied, setCopied] = useState(false);
+export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenChat, onOpenProfile, isStarred = false, onToggleStar, isProcessing = false }: ApplicantCardProps) {
   const [actionLoading, setActionLoading] = useState<'accept' | 'deny' | 'withdraw' | null>(null);
 
   const walletAddr =
@@ -50,15 +51,6 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
   const currentStatus = applicant.status || (applicant.granted ? 'accepted' : 'pending');
 
   const isExpired = applicant.expires_at ? formatTimeRemaining(new Date(applicant.expires_at)).isExpired : false;
-
-  const handleCopyWallet = () => {
-    if (walletAddr) {
-      navigator.clipboard.writeText(walletAddr);
-      setCopied(true);
-      toast.success('Wallet address copied!');
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
 
   const handleAcceptClick = async () => {
     if (isExpired) {
@@ -106,13 +98,7 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
               value={walletAddr}
               className="sm:text-sm text-white bg-[#232326] px-3 py-1 rounded-xl border border-[#333338] select-all break-all"
             />
-            <button
-              onClick={handleCopyWallet}
-              className="text-[#a1a1aa] hover:text-white transition-colors p-1 text-xs"
-              title="Copy Wallet Address"
-            >
-              {copied ? '✓' : '📋'}
-            </button>
+            <AddressBadge value={walletAddr} label="Copy Wallet Address" />
             {onToggleStar && (
               <button
                 type="button"
