@@ -100,6 +100,7 @@ export default function RootLayout({
           <NetworkMismatchBanner />
           {children}
           <Toaster />
+          <PerformanceTelemetryButton />
         </ThemeProvider>
       </body>
     </html>

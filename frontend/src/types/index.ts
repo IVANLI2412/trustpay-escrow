@@ -101,50 +101,27 @@ export interface PaginationMeta {
   hasPrevPage: boolean;
 }
 
-export type TransactionOperationType = 'Deposit' | 'Release' | 'Dispute' | 'Fee' | 'Refund' | 'Other';
-
-export interface TransactionActivity {
-  id: string;
-  hash: string;
-  ledger: number;
-  timestamp: string;
-  operation_type: TransactionOperationType;
+/** One payout tranche in a DAO escrow proposal. */
+export interface DaoProposalMilestone {
+  title: string;
   amount: number;
-  asset: string;
-  counterparty: string;
-  status: 'success' | 'failed' | 'pending';
+  due_date?: string;
 }
 
-export interface ContractTtlInfo {
-  contract_id: string;
-  current_ledger: number;
-  expiration_ledger: number;
-  remaining_ledgers: number;
-  is_warning: boolean;
-  last_bumped_at?: string;
-}
-
-export interface ProjectReview {
-  id: string;
-  project_id: string;
-  reviewer_address: string;
-  reviewer_role: 'client' | 'freelancer';
-  communication_rating: number;
-  quality_rating: number;
-  timeliness_rating: number;
-  average_rating: number;
-  testimonial: string;
-  created_at: string;
-}
-
-/** A freelancer the client has starred, with private notes (#255). */
-export interface StarredFreelancer {
-  /** Stellar address, the stable identifier. */
-  address: string;
-  name?: string;
-  /** Private to the client; never sent to the freelancer. */
-  notes: string;
-  starredAt: string;
-  /** Project the freelancer applied to or worked on, for context. */
-  lastProjectTitle?: string;
+/** Escrow terms plus governance settings used to generate a DAO proposal. */
+export interface DaoProposalInput {
+  proposalTitle: string;
+  projectTitle: string;
+  description: string;
+  category?: string;
+  token: string;
+  tokenAddress: string;
+  /** DAO treasury account that funds and authorises the escrow (the contract's `client`). */
+  treasuryAddress: string;
+  freelancerAddress?: string;
+  arbiterAddress?: string;
+  milestones: DaoProposalMilestone[];
+  yieldEnabled: boolean;
+  deadline?: string;
+  votingPeriodDays: number;
 }
