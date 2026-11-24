@@ -53,6 +53,7 @@ import {
 } from '@/components/MultisigApprovalModal';
 import type { PendingMultisigRequest } from '@/store/walletStore';
 import { ProjectActionsDropdown } from '@/components/ProjectActionsDropdown';
+import { OfflineStatusPill } from '@/components/OfflineStatusPill';
 
 export interface ClientDashboardProps {
   defaultTab?: 'projects' | 'create' | 'applicants' | 'saved';
@@ -939,6 +940,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                 <NumberRoll value={projects.length} /> <span>{projects.length === 1 ? 'project' : 'projects'}</span>
               </h2>
               <div className="flex items-center gap-2">
+                <OfflineStatusPill />
                 {(isMultisig || accountPendingMultisig.length > 0) && (
                   <button
                     type="button"
