@@ -1189,3 +1189,179 @@ export async function submitCoSignedTransaction(
   }
   throw new Error(`Transaction timed out while awaiting ledger inclusion (tx: ${txHash}).`);
 }
+
+// ============================================================================
+// Soroban Resource Inspector — Pre-flight simulation for CPU, Memory & Rent
+// ============================================================================
+
+export interface SorobanResourceFootprint {
+  cpuInstructions: number;
+  memoryBytes: number;
+  rentBytes: number;
+  estimatedFeeStroops: string;
+  success: boolean;
+  error?: string;
+  rawResult?: any;
+}
+
+export const RESOURCE_THRESHOLDS = {
+  CPU: {
+    warning: 80_000_000,
+    critical: 95_000_000,
+    max: 100_000_000,
+  },
+  MEMORY: {
+    warning: 80 * 1024 * 1024, // 80 MB
+    critical: 95 * 1024 * 1024, // 95 MB
+    max: 100 * 1024 * 1024, // 100 MB
+  },
+  RENT: {
+    warning: 80 * 1024 * 1024, // 80 MB
+    critical: 95 * 1024 * 1024, // 95 MB
+    max: 100 * 1024 * 1024, // 100 MB
+  },
+} as const;
+
+export type ResourceLevel = 'safe' | 'warning' | 'critical';
+
+export type ResourceThreshold = {
+  warning: number;
+  critical: number;
+  max: number;
+};
+
+export function getResourceUtilization(
+  value: number,
+  threshold: ResourceThreshold
+): { percentage: number; level: ResourceLevel } {
+  const percentage = Math.min(100, Math.round((value / threshold.max) * 100));
+  const level: ResourceLevel =
+    value >= threshold.critical
+      ? 'critical'
+      : value >= threshold.warning
+        ? 'warning'
+        : 'safe';
+  return { percentage, level };
+}
+
+export function getResourceLevelClass(level: ResourceLevel): string {
+  switch (level) {
+    case 'critical':
+      return 'bg-rose-500';
+    case 'warning':
+      return 'bg-amber-500';
+    default:
+      return 'bg-emerald-500';
+  }
+}
+
+export function formatResourceValue(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/**
+ * Run a read-only Soroban RPC simulation of a contract invocation and return
+ * its resource footprint (CPU instructions, memory, rent and fee estimate).
+ * Never signs or submits anything — safe to call before the user approves.
+ */
+export async function simulateSorobanTransaction(options: {
+  contractAddress: string;
+  functionName: string;
+  args: xdr.ScVal[];
+  sourceAccount: string;
+}): Promise<SorobanResourceFootprint> {
+  const empty: SorobanResourceFootprint = {
+    cpuInstructions: 0,
+    memoryBytes: 0,
+    rentBytes: 0,
+    estimatedFeeStroops: '0',
+    success: false,
+  };
+  try {
+    const { contractAddress, functionName, args, sourceAccount } = options;
+    if (!sourceAccount) throw new Error('Wallet address required for simulation');
+
+    const server = getSorobanRpcServer();
+    await ensureAccountExists(sourceAccount);
+    const account = await server.getAccount(sourceAccount);
+
+    const transaction = new TransactionBuilder(account, {
+      fee: '100000',
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        Operation.invokeContractFunction({
+          contract: contractAddress,
+          function: functionName,
+          args,
+        })
+      )
+      .setTimeout(180)
+      .build();
+
+    const simulation = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simulation)) {
+      return {
+        ...empty,
+        error: simulation.error || 'Simulation failed',
+        rawResult: simulation,
+      };
+    }
+
+    // SDK versions expose this either as `cost` (cpuInsns/memBytes) or nested
+    // under a `minResourceFee` object with `resources`/`totalFee`. Normalize both.
+    type SimulationLike = {
+      cost?: { cpuInsns?: number | string; memBytes?: number | string };
+      minResourceFee?:
+        | string
+        | {
+            totalFee?: string;
+            resources?: {
+              instructions?: number | string;
+              memoryBytes?: number | string;
+              rentBytes?: number | string;
+            };
+          };
+      result?: { retval?: unknown };
+      events?: unknown;
+      transactionData?: unknown;
+    };
+    const sim = simulation as unknown as SimulationLike;
+    const feeObject =
+      sim.minResourceFee && typeof sim.minResourceFee === 'object'
+        ? sim.minResourceFee
+        : undefined;
+    const resources = feeObject?.resources;
+
+    const cpuInstructions = Number(resources?.instructions ?? sim.cost?.cpuInsns ?? 0);
+    const memoryBytes = Number(resources?.memoryBytes ?? sim.cost?.memBytes ?? 0);
+    const rentBytes = Number(resources?.rentBytes ?? 0);
+    const estimatedFeeStroops =
+      feeObject?.totalFee ??
+      (typeof sim.minResourceFee === 'string' ? sim.minResourceFee : '0');
+
+    const rawResult = {
+      result: sim.result?.retval,
+      events: sim.events,
+      minResourceFee: sim.minResourceFee,
+      transactionData: sim.transactionData,
+    };
+
+    return {
+      cpuInstructions,
+      memoryBytes,
+      rentBytes,
+      estimatedFeeStroops,
+      success: true,
+      rawResult,
+    };
+  } catch (error: any) {
+    return {
+      ...empty,
+      error: error?.message ?? String(error),
+    };
+  }
+}

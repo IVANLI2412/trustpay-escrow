@@ -42,6 +42,7 @@ import {
   RequestRevisionModal,
   type RevisionRequestPayload,
 } from '@/components/RequestRevisionModal';
+import { SorobanResourceInspectorModal } from '@/components/SorobanResourceInspectorModal';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
@@ -91,6 +92,28 @@ export default function ProjectDetailsPage() {
 
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showMutualCancelModal, setShowMutualCancelModal] = useState(false);
+  const [resourceInspectorTx, setResourceInspectorTx] = useState<{
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  } | null>(null);
+
+  // #305 — pre-flight simulation of the same approve_milestone invocation used
+  // by the real Approve action, but WITHOUT signing or submitting anything.
+  const openResourceInspector = () => {
+    const onChainId = project?.project_id_onchain ?? 1;
+    setResourceInspectorTx({
+      contractAddress: project?.contract_id || DEFAULT_ESCROW_CONTRACT_ID,
+      functionName: 'approve_milestone',
+      args: [
+        nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+        nativeToScVal(0, { type: 'u32' }),
+        xdr.ScVal.scvVoid(), // platform address (same fallback as approveMilestone)
+      ],
+      description: 'Approve & Release Milestone #1',
+    });
+  };
 
   // Escape mirrors each modal's own Cancel button.
   useEscapeKey(() => {
@@ -807,6 +830,15 @@ export default function ProjectDetailsPage() {
             >
               <span>🔒</span>
               <span>Contract Security</span>
+            </button>
+
+            <button
+              onClick={openResourceInspector}
+              className="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/20 hover:text-white transition-all flex items-center gap-1.5"
+              title="Pre-flight Soroban simulation: CPU, memory & rent usage before signing"
+            >
+              <span>🔬</span>
+              <span>Inspect Resources</span>
             </button>
 
             {(isClient || isFreelancer) && project.status === 'in_progress' && (
@@ -1648,6 +1680,12 @@ export default function ProjectDetailsPage() {
         onClose={() => setShowMutualCancelModal(false)}
         project={project}
         onUpdated={fetchProject}
+      />
+
+      {/* Pre-flight Soroban Resource Inspector (#305) */}
+      <SorobanResourceInspectorModal
+        transaction={resourceInspectorTx}
+        onClose={() => setResourceInspectorTx(null)}
       />
     </div>
   );
