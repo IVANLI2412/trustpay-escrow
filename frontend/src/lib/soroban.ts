@@ -1161,6 +1161,134 @@ export async function cosignTransactionXdr(txXdr: string, signerAddress: string)
 }
 
 /**
+ * Builds a Stellar FeeBumpTransaction envelope wrapping an inner transaction.
+ * FeeBumpTransaction allows paying a higher fee to accelerate a stalled transaction
+ * without re-creating the inner contract invocation.
+ */
+export async function buildFeeBumpTransaction(params: {
+  /** The inner transaction XDR (base64) that stalled and needs fee bump. */
+  innerTxXdr: string;
+  /** Fee multiplier: 1.5x = Standard, 2x = Fast, 3x = Urgent. */
+  feeMultiplier: number;
+  /** Account that will pay the bumped fee (must sign the fee-bump envelope). */
+  feeSourceAddress: string;
+  /** Optional custom inclusion fee in stroops (overrides multiplier). */
+  customFeeStroops?: number;
+}): Promise<{ feeBumpTxXdr: string; newFee: string }> {
+  const { innerTxXdr, feeMultiplier, feeSourceAddress, customFeeStroops } = params;
+
+  // Parse the inner transaction to get its current fee
+  const innerTx = TransactionBuilder.fromXDR(innerTxXdr, STELLAR_NETWORK_PASSPHRASE);
+  const innerFee = innerTx.fee; // in stroops
+
+  // Calculate new fee
+  let newFee: number;
+  if (customFeeStroops !== undefined && customFeeStroops > 0) {
+    newFee = Math.ceil(customFeeStroops);
+  } else {
+    newFee = Math.ceil(Number(innerFee) * feeMultiplier);
+  }
+
+  // Minimum fee bump: new fee must be at least 1.1x the inner fee
+  const minFee = Math.ceil(Number(innerFee) * 1.1);
+  if (newFee < minFee) newFee = minFee;
+
+  // Build FeeBumpTransaction
+  // The feeSource must be a valid Stellar account (G... address)
+  const feeSource = new Account(feeSourceAddress, '0');
+  const feeBumpTx = new TransactionBuilder(feeSource, {
+    fee: String(newFee),
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      Operation.feeBump({
+        innerTx: innerTxXdr,
+        feeSource: feeSourceAddress,
+      })
+    )
+    .setTimeout(180)
+    .build();
+
+  return {
+    feeBumpTxXdr: feeBumpTx.toXDR(),
+    newFee: String(newFee),
+  };
+}
+
+/**
+ * Signs and submits a FeeBumpTransaction via Freighter.
+ */
+export async function submitFeeBumpTransaction(params: {
+  feeBumpTxXdr: string;
+  feeSourceAddress: string;
+  onStatusUpdate?: TxStatusCallback;
+}): Promise<SorobanTxResult> {
+  const { feeBumpTxXdr, feeSourceAddress, onStatusUpdate } = params;
+
+  onStatusUpdate?.('preparing', 'Validating wallet connection for fee bump...');
+
+  if (!(await isConnected())) {
+    throw new Error('Freighter wallet extension is not detected. Please install and unlock Freighter.');
+  }
+
+  await ensureAccountExists(feeSourceAddress);
+
+  onStatusUpdate?.('signing', 'Awaiting fee-bump authorization signature in Freighter wallet...');
+
+  let signResult: any;
+  try {
+    signResult = await signTransaction(feeBumpTxXdr, {
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+      address: feeSourceAddress,
+    });
+  } catch (signErr: any) {
+    throw new Error(`Wallet signing cancelled or rejected: ${signErr.message || signErr}`);
+  }
+
+  let signedXdr = '';
+  if (typeof signResult === 'string') {
+    signedXdr = signResult;
+  } else if (signResult && typeof signResult === 'object') {
+    if (signResult.error) {
+      throw new Error(typeof signResult.error === 'string' ? signResult.error : (signResult.error.message || 'Freighter rejected signature'));
+    }
+    signedXdr = signResult.signedTxXdr || signResult.signedTransaction || '';
+  }
+
+  if (!signedXdr) {
+    throw new Error('Fee-bump transaction signing was rejected or returned empty XDR.');
+  }
+
+  onStatusUpdate?.('submitting', 'Broadcasting fee-bump transaction to Stellar network...');
+
+  const server = getSorobanRpcServer();
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, STELLAR_NETWORK_PASSPHRASE);
+  const sendRes = await server.sendTransaction(signedTx);
+
+  if (sendRes.status === 'ERROR') {
+    const detail = sendRes.errorResult ? JSON.stringify(sendRes.errorResult) : sendRes.status;
+    throw new Error(`Fee-bump transaction rejected by Stellar RPC: ${detail}`);
+  }
+
+  const txHash = sendRes.hash;
+  onStatusUpdate?.('polling', `Fee-bump submitted (tx: ${txHash.slice(0, 8)}...). Awaiting confirmation...`);
+
+  for (let attempt = 0; attempt < 35; attempt++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const status = await server.getTransaction(txHash);
+    if (status.status === 'SUCCESS') {
+      onStatusUpdate?.('success', 'Fee-bump transaction confirmed! Original transaction should now be processed.');
+      return { success: true, txHash, returnValue: null };
+    }
+    if (status.status === 'FAILED') {
+      throw new Error(`Fee-bump transaction failed during ledger execution (tx: ${txHash})`);
+    }
+  }
+
+  throw new Error(`Fee-bump timed out while awaiting ledger inclusion (tx: ${txHash}). Please verify on Stellar.Expert.`);
+}
+
+/**
  * Broadcasts a fully co-signed transaction and waits for ledger finality.
  */
 export async function submitCoSignedTransaction(

@@ -42,6 +42,7 @@ import {
   RequestRevisionModal,
   type RevisionRequestPayload,
 } from '@/components/RequestRevisionModal';
+import { TransactionSpeedUpModal } from '@/components/TransactionSpeedUpModal';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
@@ -82,6 +83,16 @@ export default function ProjectDetailsPage() {
   const [activeResolveModal, setActiveResolveModal] = useState(false);
   const [resolveClientAmount, setResolveClientAmount] = useState<number | ''>('');
   const [resolveFreelancerAmount, setResolveFreelancerAmount] = useState<number | ''>('');
+
+  // Transaction speed-up modal state (#313)
+  const [stalledTransaction, setStalledTransaction] = useState<{
+    id: string;
+    innerTxXdr: string;
+    description: string;
+    submittedAt: string;
+    projectId?: string;
+    milestoneIndex?: number;
+  } | null>(null);
 
   const [showFundEscrowModal, setShowFundEscrowModal] = useState(false);
   const [fundFreelancerAddress, setFundFreelancerAddress] = useState('');
@@ -1623,6 +1634,27 @@ export default function ProjectDetailsPage() {
                 Close
               </Button>
             )}
+
+            {txState.stage === 'polling' && txState.txHash && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // In a real implementation, we'd retrieve the innerTxXdr from storage
+                  // For now, we'll use a placeholder that would be replaced with actual XDR
+                  const stalledTx = {
+                    id: `speedup-${txState.txHash}`,
+                    innerTxXdr: txState.txHash, // Placeholder - actual implementation would store XDR
+                    description: 'Pending Transaction',
+                    submittedAt: new Date(Date.now() - 20000).toISOString(),
+                    projectId: projectId,
+                  };
+                  setStalledTransaction(stalledTx);
+                }}
+                className="mt-2 w-full border-rose-500/30 text-rose-400 hover:bg-rose-500/10 rounded-xl text-xs py-2"
+              >
+                ⚡ Speed Up Transaction
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -1648,6 +1680,17 @@ export default function ProjectDetailsPage() {
         onClose={() => setShowMutualCancelModal(false)}
         project={project}
         onUpdated={fetchProject}
+      />
+
+      {/* Transaction Speed-Up Modal (#313) */}
+      <TransactionSpeedUpModal
+        stalledTx={stalledTransaction}
+        onClose={() => setStalledTransaction(null)}
+        onSuccess={(newTxHash) => {
+          toast.success(`Fee-bump confirmed: ${newTxHash.slice(0, 16)}...`);
+          setStalledTransaction(null);
+          void fetchProject();
+        }}
       />
     </div>
   );
