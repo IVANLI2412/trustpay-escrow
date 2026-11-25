@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
+import { SupportedWalletId } from '@/lib/wallet-adapters';
 
 // Safe storage resolver that handles browser localStorage and falls back gracefully in tests/SSR
 const getStorageProvider = () => {
@@ -58,17 +59,14 @@ export interface PendingMultisigRequest {
 export interface WalletState {
   address: string | null;
   walletName: string | null;
-  network: string | null;
-  targetNetwork: string;
+  walletType: SupportedWalletId | null;
   activeRole: ActiveRole;
   isClient: boolean;
   isFreelancer: boolean;
   isArbiter: boolean;
   token: string | null;
-  orgAccounts: OrgWalletAccount[];
-  activeOrgAccountId: string | null;
-  roleFilterStates: Record<ActiveRole, RoleFilterState>;
-  pendingMultisig: PendingMultisigRequest[];
+  isConnecting: boolean;
+  setIsConnecting: (isConnecting: boolean) => void;
   setActiveRole: (role: ActiveRole) => void;
   /** Replaces the in-memory SEP-0010 JWT (e.g. after a silent refresh). */
   setToken: (token: string | null) => void;
@@ -79,7 +77,7 @@ export interface WalletState {
     isFreelancer?: boolean,
     walletName?: string,
     token?: string | null,
-    network?: string | null
+    walletType?: SupportedWalletId | null
   ) => void;
   addOrgAccount: (account: { label: string; address: string; walletName?: string }) => void;
   removeOrgAccount: (id: string) => void;
@@ -99,55 +97,24 @@ export const useWalletStore = create<WalletState>()(
     (set, get) => ({
       address: null,
       walletName: null,
-      network: null,
-      targetNetwork: process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'TESTNET',
+      walletType: null,
       activeRole: 'client',
       isClient: true,
       isFreelancer: true,
       isArbiter: true,
       token: null,
-      orgAccounts: [],
-      activeOrgAccountId: null,
-      roleFilterStates: {
-        client: { status: 'all', search: '', category: 'All' },
-        freelancer: { status: 'all', search: '', category: 'All' },
-        arbiter: { status: 'disputed', search: '', category: 'All' },
-      },
-      pendingMultisig: [],
+      isConnecting: false,
+      setIsConnecting: (isConnecting) => set({ isConnecting }),
       setActiveRole: (activeRole) => set({ activeRole }),
-      setToken: (token) => set({ token }),
-      setRoleFilter: (role, filters) =>
-        set((state) => ({
-          roleFilterStates: {
-            ...state.roleFilterStates,
-            [role]: { ...state.roleFilterStates[role], ...filters },
-          },
-        })),
       setWalletInfo: (
         address,
         isClient = true,
         isFreelancer = true,
         walletName = 'Freighter',
         token = null,
-        network = null
+        walletType = 'freighter'
       ) =>
-        set({ address, isClient, isFreelancer, walletName, token, network }),
-      addPendingMultisig: (request) => {
-        const id = `msig-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        set((state) => ({
-          pendingMultisig: [
-            { ...request, id, createdAt: new Date().toISOString() },
-            ...state.pendingMultisig,
-          ],
-        }));
-        return id;
-      },
-      updatePendingMultisig: (id, xdr) =>
-        set((state) => ({
-          pendingMultisig: state.pendingMultisig.map((r) => (r.id === id ? { ...r, xdr } : r)),
-        })),
-      removePendingMultisig: (id) =>
-        set((state) => ({ pendingMultisig: state.pendingMultisig.filter((r) => r.id !== id) })),
+        set({ address, isClient, isFreelancer, walletName, token, walletType }),
       disconnect: () => {
         try {
           const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -155,18 +122,18 @@ export const useWalletStore = create<WalletState>()(
         } catch {
           // ignore network error on logout
         }
+        // Drop persisted tab/filter context so the next wallet starts clean (#177)
+        clearPersistedDashboardState();
         set({
           address: null,
           walletName: null,
-          network: null,
+          walletType: null,
           activeRole: 'client',
           isClient: true,
           isFreelancer: true,
           isArbiter: true,
           token: null,
-          orgAccounts: [],
-          activeOrgAccountId: null,
-          pendingMultisig: [],
+          isConnecting: false,
         });
       },
     }),

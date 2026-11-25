@@ -8,16 +8,17 @@ import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
 
 import { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
+import { DisputeEvidenceAttachments } from '@/components/DisputeEvidenceAttachments';
+import { downloadBlob } from '@/lib/share-card';
 import { ProjectDetailSkeleton } from '@/components/skeletons';
-import { ProjectAuditLog } from '@/components/ProjectAuditLog';
-import { CalendarExportButton } from '@/components/CalendarExportButton';
-import { ContractSecurityModal } from '@/components/ContractSecurityModal';
-import { MutualCancellationModal } from '@/components/MutualCancellationModal';
+import { TimelockCountdownBanner } from '@/components/TimelockCountdownBanner';
 import { useWalletStore } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
 import { CryptoId } from '@/components/ui/CryptoId';
 
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { useA11yAnnouncer } from '@/components/A11yLiveAnnouncer';
+import { MilestoneCertificateButton } from '@/components/MilestoneCertificateButton';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import {
   createProjectOnChain,
@@ -38,10 +39,12 @@ import { DeliverableDiffViewer } from '@/components/DeliverableDiffViewer';
 import { SorobanEventStreamDrawer } from '@/components/SorobanEventStreamDrawer';
 import { MilestoneGanttChart } from '@/components/MilestoneGanttChart';
 import { DeliverableChecksums } from '@/components/FileChecksumBadge';
+import { GitRepoMilestoneConnector, GitDeliverableBadge } from '@/components/GitRepoMilestoneConnector';
 import {
   RequestRevisionModal,
   type RevisionRequestPayload,
 } from '@/components/RequestRevisionModal';
+import { ProjectReviewModal } from '@/components/ProjectReviewModal';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
@@ -49,6 +52,7 @@ export default function ProjectDetailsPage() {
   const projectId = params.id as string;
 
   const { address, activeRole } = useWalletStore();
+  const { announce } = useA11yAnnouncer();
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,14 +87,53 @@ export default function ProjectDetailsPage() {
   const [resolveClientAmount, setResolveClientAmount] = useState<number | ''>('');
   const [resolveFreelancerAmount, setResolveFreelancerAmount] = useState<number | ''>('');
 
+  // Review modal state (#312)
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewContext, setReviewContext] = useState<{
+    revieweeAddress: string;
+    revieweeRole: 'client' | 'freelancer';
+    reviewerRole: 'client' | 'freelancer';
+  } | null>(null);
+
   const [showFundEscrowModal, setShowFundEscrowModal] = useState(false);
   const [fundFreelancerAddress, setFundFreelancerAddress] = useState('');
   const [showDeliverableDiff, setShowDeliverableDiff] = useState(false);
 
   const { signWithSep07, sep07Modal } = useSep07Signer();
 
+  // Announce async blockchain state changes to screen readers (#309)
+  useEffect(() => {
+    if (!txState.isOpen || !txState.message) return;
+    announce(
+      `Escrow transaction ${txState.stage}: ${txState.message}`,
+      txState.stage === 'error' ? 'assertive' : 'polite'
+    );
+  }, [txState.isOpen, txState.stage, txState.message, txState.error, announce]);
+
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showMutualCancelModal, setShowMutualCancelModal] = useState(false);
+  const [resourceInspectorTx, setResourceInspectorTx] = useState<{
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  } | null>(null);
+
+  // #305 — pre-flight simulation of the same approve_milestone invocation used
+  // by the real Approve action, but WITHOUT signing or submitting anything.
+  const openResourceInspector = () => {
+    const onChainId = project?.project_id_onchain ?? 1;
+    setResourceInspectorTx({
+      contractAddress: project?.contract_id || DEFAULT_ESCROW_CONTRACT_ID,
+      functionName: 'approve_milestone',
+      args: [
+        nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+        nativeToScVal(0, { type: 'u32' }),
+        xdr.ScVal.scvVoid(), // platform address (same fallback as approveMilestone)
+      ],
+      description: 'Approve & Release Milestone #1',
+    });
+  };
 
   // Escape mirrors each modal's own Cancel button.
   useEscapeKey(() => {
@@ -158,6 +201,52 @@ export default function ProjectDetailsPage() {
     if (!projectId) return;
     fetchProject();
   }, [projectId]);
+
+  // Prompt for review when project is completed (#312)
+  useEffect(() => {
+    if (!project || project.status !== 'completed' || !address) return;
+    
+    const isClientUser = Boolean(
+      address && (
+        (project.client_address && address.toUpperCase() === project.client_address.toUpperCase()) ||
+        activeRole === 'client'
+      )
+    );
+    const isFreelancerUser = Boolean(
+      address && (
+        (project.freelancer_address && address.toUpperCase() === project.freelancer_address.toUpperCase()) ||
+        activeRole === 'freelancer'
+      )
+    );
+
+    // Check if user has already reviewed (would need API call in real implementation)
+    // For now, show prompt if user is a participant and project is completed
+    if (isClientUser || isFreelancerUser) {
+      const reviewedKey = `reviewed-${projectId}-${address}`;
+      const hasReviewed = window.localStorage.getItem(reviewedKey);
+      
+      if (!hasReviewed) {
+        // Small delay to let UI settle
+        const timer = setTimeout(() => {
+          if (isClientUser) {
+            setReviewContext({
+              revieweeAddress: project.freelancer_address || '',
+              revieweeRole: 'freelancer',
+              reviewerRole: 'client',
+            });
+          } else if (isFreelancerUser) {
+            setReviewContext({
+              revieweeAddress: project.client_address || '',
+              revieweeRole: 'client',
+              reviewerRole: 'freelancer',
+            });
+          }
+          setShowReviewModal(true);
+        }, 1500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [project, address, activeRole, projectId]);
 
   if (loading) {
     return <ProjectDetailSkeleton />;
@@ -809,6 +898,15 @@ export default function ProjectDetailsPage() {
               <span>Contract Security</span>
             </button>
 
+            <button
+              onClick={openResourceInspector}
+              className="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/20 hover:text-white transition-all flex items-center gap-1.5"
+              title="Pre-flight Soroban simulation: CPU, memory & rent usage before signing"
+            >
+              <span>🔬</span>
+              <span>Inspect Resources</span>
+            </button>
+
             {(isClient || isFreelancer) && project.status === 'in_progress' && (
               <button
                 onClick={() => setShowMutualCancelModal(true)}
@@ -1019,16 +1117,21 @@ export default function ProjectDetailsPage() {
             )}
           </div>
 
-          {project.milestones && project.milestones.length > 0 && (
-            <MilestoneGanttChart
-              milestones={project.milestones}
-              projectStart={project.created_at?.slice(0, 10)}
-              projectEnd={project.deadline}
-              tokenSymbol={tokenSymbol}
-              editable={project.status === 'draft'}
-              onReschedule={handleRescheduleMilestone}
-            />
-          )}
+          {/* Active Timelock Countdown Banners for Submitted Milestones */}
+          {project.milestones
+            ?.filter((m) => m.status === 'submitted')
+            .map((submittedM) => (
+              <TimelockCountdownBanner
+                key={`timelock-${submittedM.id}`}
+                milestone={submittedM}
+                project={project}
+                onApprove={(m) => setActiveApproveModal(m)}
+                onRequestRevision={(m) => {
+                  setActiveRevisionModal(m);
+                  setRevisionNote('');
+                }}
+              />
+            ))}
 
           {!project.milestones || project.milestones.length === 0 ? (
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-10 text-center flex flex-col items-center justify-center">
@@ -1100,16 +1203,19 @@ export default function ProjectDetailsPage() {
                       )}
 
                       {m.deliverable_url && (
-                        <div className="pl-10 pt-0.5 text-xs text-indigo-400 flex items-center gap-2">
-                          <span className="text-slate-500 font-medium">Deliverable Link:</span>
-                          <a
-                            href={m.deliverable_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
-                          >
-                            {m.deliverable_url}
-                          </a>
+                        <div className="pl-10 pt-1 flex flex-wrap items-center gap-2">
+                          <div className="text-xs text-indigo-400 flex items-center gap-2">
+                            <span className="text-slate-500 font-medium">Deliverable Link:</span>
+                            <a
+                              href={m.deliverable_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
+                            >
+                              {m.deliverable_url}
+                            </a>
+                          </div>
+                          <GitDeliverableBadge url={m.deliverable_url} commitHash={m.deliverable_hash} />
                         </div>
                       )}
 
@@ -1212,9 +1318,12 @@ export default function ProjectDetailsPage() {
                         )}
 
                         {m.status === 'approved' && (
-                          <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
-                            <span>✓</span> Released On-Chain
-                          </span>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
+                              <span>✓</span> Released On-Chain
+                            </span>
+                            <MilestoneCertificateButton project={project} milestone={m} txHash={project.tx_hash} />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1266,13 +1375,14 @@ export default function ProjectDetailsPage() {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Deliverable URL / Repository PR / IPFS Gateway</label>
-                <input
-                  type="text"
-                  value={deliverableUrl}
-                  onChange={(e) => setDeliverableUrl(e.target.value)}
-                  placeholder="https://github.com/organization/repo/pull/1 or https://ipfs.io/ipfs/..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
+                <GitRepoMilestoneConnector
+                  initialUrl={deliverableUrl}
+                  onConnectorChange={({ url, metadata, isValid }) => {
+                    setDeliverableUrl(url);
+                    if (isValid && metadata) {
+                      setDeliverableHash(metadata.latestCommitHash);
+                    }
+                  }}
                 />
               </div>
 
@@ -1485,6 +1595,7 @@ export default function ProjectDetailsPage() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
                 />
               </div>
+              <DisputeEvidenceAttachments />
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
@@ -1623,6 +1734,27 @@ export default function ProjectDetailsPage() {
                 Close
               </Button>
             )}
+
+            {txState.stage === 'polling' && txState.txHash && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // In a real implementation, we'd retrieve the innerTxXdr from storage
+                  // For now, we'll use a placeholder that would be replaced with actual XDR
+                  const stalledTx = {
+                    id: `speedup-${txState.txHash}`,
+                    innerTxXdr: txState.txHash, // Placeholder - actual implementation would store XDR
+                    description: 'Pending Transaction',
+                    submittedAt: new Date(Date.now() - 20000).toISOString(),
+                    projectId: projectId,
+                  };
+                  setStalledTransaction(stalledTx);
+                }}
+                className="mt-2 w-full border-rose-500/30 text-rose-400 hover:bg-rose-500/10 rounded-xl text-xs py-2"
+              >
+                ⚡ Speed Up Transaction
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -1632,6 +1764,10 @@ export default function ProjectDetailsPage() {
           imageUrl={lightboxImage.url}
           imageAlt={lightboxImage.name}
           onClose={() => setLightboxImage(null)}
+          onAnnotatedExport={({ blob, filename }) => {
+            downloadBlob(blob, filename);
+            toast.success('Sanitized copy downloaded');
+          }}
         />
       )}
 
@@ -1648,6 +1784,30 @@ export default function ProjectDetailsPage() {
         onClose={() => setShowMutualCancelModal(false)}
         project={project}
         onUpdated={fetchProject}
+      />
+
+      {/* Project Review Modal (#312) */}
+      <ProjectReviewModal
+        isOpen={showReviewModal}
+        onClose={() => { setShowReviewModal(false); setReviewContext(null); }}
+        projectId={projectId}
+        projectTitle={project?.title || ''}
+        revieweeAddress={reviewContext?.revieweeAddress || ''}
+        revieweeRole={reviewContext?.revieweeRole || 'freelancer'}
+        reviewerRole={reviewContext?.reviewerRole || 'client'}
+        onSubmit={async (review) => {
+          // In a real implementation, this would call the API
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+          await fetch(`${apiUrl}/api/projects/${projectId}/reviews`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(review),
+          });
+          setShowReviewModal(false);
+          setReviewContext(null);
+          toast.success('Review submitted successfully!');
+          void fetchProject();
+        }}
       />
     </div>
   );

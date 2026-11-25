@@ -10,6 +10,7 @@ import {
 import { z } from 'zod';
 import { useWalletStore } from '@/store/walletStore';
 import { useRouter } from 'next/navigation';
+import { useOfflineSync, OfflineStatusPill } from '@/hooks/useOfflineSync';
 
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import { HORIZON_URL } from '@/lib/soroban';
@@ -33,6 +34,46 @@ export function getBalanceShortfall(balance: number | null, budget: number): num
   const required = Number.isFinite(requiredNumber) && requiredNumber > 0 ? requiredNumber : 0;
   const available = Number.isFinite(availableNumber) && availableNumber > 0 ? availableNumber : 0;
   return Math.max(0, Number((required - available).toFixed(7)));
+}
+
+/**
+ * Returns the compact prefix badge label (`$`, `€`, or `XLM`) displayed inside amount inputs.
+ */
+export function getCurrencySymbolPrefix(token: string | null | undefined): string {
+  const normalized = (token || "").trim().toUpperCase();
+  if (!normalized || normalized === "USDC" || normalized === "PYUSD") return "$";
+  if (normalized === "EURC") return "€";
+  if (normalized === "XLM") return "XLM";
+  return normalized;
+}
+
+/**
+ * Computes left input padding so right-aligned numbers never collide with the currency prefix badge.
+ */
+export function getCurrencyInputPaddingClass(prefix: string): string {
+  const len = prefix.trim().length;
+  if (len <= 1) return "pl-11";
+  if (len <= 3) return "pl-16";
+  return "pl-20";
+}
+
+/**
+ * Parses raw numeric text into a clean finite number (or `""` when cleared), stripping any stray
+ * currency symbols, whitespace, or grouping commas.
+ */
+export function parseCurrencyNumericInput(rawValue: string | number): number | "" {
+  if (typeof rawValue === "number") {
+    return Number.isFinite(rawValue) ? rawValue : "";
+  }
+  const stripped = rawValue
+    .replace(/(?:^|[^a-zA-Z])(?:USDC|EURC|PYUSD|XLM)(?=[\s\d.,$€₱✦]|$)/gi, "")
+    .replace(/[$€₱✦,\s]/g, "")
+    .trim();
+  if (stripped === "" || stripped === "-" || stripped === "." || stripped === "-.") {
+    return "";
+  }
+  const parsed = Number(stripped);
+  return Number.isFinite(parsed) ? parsed : "";
 }
 
 export function isBalanceSufficient(balance: number | null, budget: number): boolean {
@@ -180,24 +221,33 @@ export function useCreateProjectForm() {
   const { address } = useWalletStore();
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof ProjectFormData, string>>>({});
-  const [currentStep, setCurrentStep] = useState<number>(1);
-  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
-  // Auto-funding after a fiat deposit: idle -> waiting (refresh requested) -> reloading -> submit/give up
-  const autoFundRef = useRef<'idle' | 'waiting' | 'reloading'>('idle');
+  
+  const {
+    isOnline,
+    persistDraft,
+    loadDraft,
+    removeDraft,
+    queueSubmission,
+  } = useOfflineSync({
+    draftKey: 'create-project-draft',
+    draftType: 'project',
+    autoSyncOnOnline: true,
+  });
 
-  const [formData, setFormData] = useState<ProjectFormData>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return { ...defaultInitialData, ...parsed, client_address: address || parsed.client_address || '' };
-        }
-      } catch (e) {
-        console.warn('Failed to parse draft from localStorage', e);
-      }
-    }
-    return { ...defaultInitialData, client_address: address || '' };
+  const [formData, setFormData] = useState<ProjectFormData>({
+    title: '',
+    description: '',
+    category: 'Development',
+    custom_category: '',
+    budget: 0,
+    token: 'USDC',
+    token_address: SUPPORTED_TOKENS.USDC.issuerOrContractAddress,
+    deadline: '',
+    visibility: 'Public',
+    attachments: [],
+    client_address: address || '',
+    yield_enabled: false,
+    estimated_yield: 0,
   });
 
   const walletBalance = useTokenBalance(address, formData.token);
@@ -206,7 +256,37 @@ export function useCreateProjectForm() {
   const balanceShortfall = getBalanceShortfall(walletBalance.balance, formData.budget);
   const hasSufficientBalance = isBalanceSufficient(walletBalance.balance, formData.budget);
 
-  // Address sync
+  // Restore draft from IndexedDB on initial mount
+  useEffect(() => {
+    let isMounted = true;
+    async function restoreDraft() {
+      const saved = await loadDraft<ProjectFormData>('create-project-draft');
+      if (saved && isMounted && (saved.title || saved.description || saved.budget > 0)) {
+        setFormData((prev) => ({
+          ...prev,
+          ...saved,
+          client_address: address || saved.client_address || '',
+        }));
+        toast.info('Restored saved project draft from local offline storage');
+      }
+    }
+    restoreDraft();
+    return () => {
+      isMounted = false;
+    };
+  }, [loadDraft, address]);
+
+  // Auto-save project creation drafts to IndexedDB every 5 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (formData.title || formData.description || formData.budget > 0) {
+        persistDraft(formData, 'create-project-draft');
+      }
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [formData, persistDraft]);
+
   useEffect(() => {
     if (address && formData.client_address !== address) {
       setFormData((prev) => ({ ...prev, client_address: address }));
@@ -242,7 +322,10 @@ export function useCreateProjectForm() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     let newValue: any = value;
-    if (name === 'budget') newValue = Number(value);
+    if (name === 'budget') {
+      const parsed = parseCurrencyNumericInput(value);
+      newValue = parsed === '' ? 0 : parsed;
+    }
     if (name === 'token') {
       const tokenConfig = SUPPORTED_TOKENS[value as keyof typeof SUPPORTED_TOKENS];
       setFormData((prev) => ({
@@ -359,6 +442,30 @@ export function useCreateProjectForm() {
     }
 
     setLoading(true);
+
+    // If offline, queue request for automatic sync on reconnect
+    if (!isOnline) {
+      try {
+        await queueSubmission({
+          url: 'http://localhost:3001/api/projects',
+          method: 'POST',
+          body: formData,
+          description: `Create project draft: ${formData.title}`,
+        });
+        await removeDraft('create-project-draft');
+        toast.warning(
+          'Offline: Project creation queued in IndexedDB. Will automatically sync when connection returns!',
+          { duration: 6000 }
+        );
+        router.push('/projects');
+      } catch (err: any) {
+        toast.error('Failed to queue offline submission');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch('http://localhost:3001/api/projects', {
         method: 'POST',
@@ -370,18 +477,16 @@ export function useCreateProjectForm() {
 
       if (!res.ok) {
         if (data.details) {
-          console.error('Backend validation details:', data.details);
-          throw new Error(data.error || 'Backend validation failed');
+            console.error('Backend validation details:', data.details);
+            throw new Error(data.error || 'Backend validation failed');
         }
         throw new Error(data.error || 'Failed to create project');
       }
 
-      toast.success('Project created and escrow initialized successfully!');
-      // Clear draft on successful submission
-      try {
-        localStorage.removeItem(DRAFT_STORAGE_KEY);
-      } catch {}
-
+      await removeDraft('create-project-draft');
+      toast.success('Project created successfully!');
+      
+      // Redirect to milestones creation page
       if (data.project && data.project.id) {
         router.push(`/projects/${data.project.id}/milestones/create`);
       } else {
@@ -437,17 +542,13 @@ export function useCreateProjectForm() {
   return {
     formData,
     setFormData,
+    currencyPrefix: getCurrencySymbolPrefix(formData.token),
     handleFiatDepositDetected,
     handlePathSwapComplete,
     loading,
     errors,
-    currentStep,
-    setCurrentStep,
-    nextStep,
-    prevStep,
-    validateStep,
-    draftSavedAt,
-    clearDraft,
+    isOnline,
+    OfflineStatusPill,
     handleChange,
     toggleYield,
     handleFileUploadMock,
