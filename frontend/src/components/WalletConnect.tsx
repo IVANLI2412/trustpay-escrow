@@ -12,6 +12,9 @@ import {
   signWithWallet,
 } from '@/lib/wallet-adapters';
 import { WalletConnectModal } from '@/components/WalletConnectModal';
+import { CryptoId } from '@/components/ui/CryptoId';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
+import { useWalletEventListener } from '@/hooks/useWalletEventListener';
 
 const getErrorMessage = (err: any, prefix = ''): string => {
   let msg = 'An unknown error occurred';
@@ -39,11 +42,21 @@ export default function WalletConnect() {
     walletType,
     setWalletInfo,
     disconnect,
+    isConnecting: storeIsConnecting,
+    setIsConnecting: setStoreIsConnecting,
   } = useWalletStore();
 
-  const [isConnecting, setIsConnecting] = useState(false);
+  useWalletEventListener();
+
+  const [isConnecting, setIsConnectingState] = useState(false);
+  const setIsConnecting = (val: boolean) => {
+    setIsConnectingState(val);
+    setStoreIsConnecting?.(val);
+  };
+
   const [showModal, setShowModal] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(false);
+  const [showXBullModal, setShowXBullModal] = useState(false);
   const [emailValue, setEmailValue] = useState('');
   const [tempAddress, setTempAddress] = useState('');
   const [tempWalletName, setTempWalletName] = useState('Freighter');
@@ -51,6 +64,7 @@ export default function WalletConnect() {
   const [tempSignedXdr, setTempSignedXdr] = useState('');
   const [copied, setCopied] = useState(false);
   const [mounted, setMounted] = useState(false);
+
   const emailDialogRef = useFocusTrap<HTMLDivElement>({
     active: showEmailModal,
     onEscape: () => {
@@ -58,10 +72,12 @@ export default function WalletConnect() {
       setIsConnecting(false);
     },
   });
+
   const xBullDialogRef = useFocusTrap<HTMLDivElement>({
     active: showXBullModal,
     onEscape: () => setShowXBullModal(false),
   });
+
   const router = useRouter();
 
   useEffect(() => {
@@ -71,7 +87,6 @@ export default function WalletConnect() {
   // Restore connection or verify existing session on page refresh
   useEffect(() => {
     if (address && walletType) {
-      // Session restored from localStorage persistence
       console.log(`Active session restored for ${address} (${walletName || walletType})`);
     }
   }, [address, walletType, walletName]);
@@ -124,12 +139,9 @@ export default function WalletConnect() {
         credentials: 'include',
         body: JSON.stringify({ transaction: signedXdr }),
       });
-      const signedXdr = result.signedXdr;
-      toast.info("Verifying cryptographic signature on backend...");
-      const verifyRes = { status: result.status, ok: result.ok };
-      const data = { token: result.token, error: result.error };
+      const data = await verifyRes.json().catch(() => ({}));
 
-      if (result.requiresRegistration) {
+      if (verifyRes.status === 404 && data.requiresRegistration) {
         setTempAddress(userAddress);
         setTempWalletName(selectedWalletName);
         setTempWalletType(selectedWalletType);
@@ -225,7 +237,10 @@ export default function WalletConnect() {
   // Email registration modal for first-time connected users
   const emailModalContent = showEmailModal ? (
     <div className="fixed inset-0 z-[9999] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
-      <div className="bg-[#18181b] border border-[#3f3f46] rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-6 shadow-2xl relative my-auto animate-fadeIn">
+      <div
+        ref={emailDialogRef}
+        className="bg-[#18181b] border border-[#3f3f46] rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-6 shadow-2xl relative my-auto animate-fadeIn"
+      >
         <div className="flex flex-col items-center text-center space-y-3 pt-2">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/25">
             <svg
@@ -243,88 +258,79 @@ export default function WalletConnect() {
               />
             </svg>
           </div>
-
-          <h3 id="wallet-email-title" className="text-2xl font-extrabold text-white tracking-tight">
-            Welcome to TrustPay
-          </h3>
-
-          <p className="text-xs sm:text-sm text-[#a1a1aa] leading-relaxed px-2">
-            First time connecting with this Stellar wallet? Please enter your email to receive
-            milestone and escrow notifications.
-          </p>
+          <div>
+            <h3 className="text-xl font-bold text-white tracking-tight">Complete Registration</h3>
+            <p className="text-xs text-[#a1a1aa] mt-1 max-w-xs">
+              This Stellar public key is newly connected. Please add your email address to register.
+            </p>
+          </div>
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-xs font-bold text-[#e4e4e7] uppercase tracking-wider">
-            Email Address
-          </label>
-          <input
-            type="email"
-            value={emailValue}
-            onChange={(e) => setEmailValue(e.target.value)}
-            placeholder="name@example.com"
-            className="w-full px-4 py-3.5 bg-[#232326] border border-[#3f3f46] rounded-xl text-white text-sm placeholder-[#71717a] focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
-          />
+        <div className="bg-[#121214] p-3.5 rounded-2xl border border-[#27272a] space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[#a1a1aa]">Wallet:</span>
+            <span className="text-white font-semibold">{tempWalletName}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[#a1a1aa]">Address:</span>
+            <span className="font-mono text-[11px] text-[#71717a] truncate max-w-[210px]">
+              {tempAddress}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[#a1a1aa]">Auth:</span>
+            <span className="text-emerald-400 font-medium">SEP-0010 Signature Verified ✓</span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-4 border-t border-[#27272a]">
-          <button
-            type="button"
-            onClick={() => {
-              setShowEmailModal(false);
-              setIsConnecting(false);
-            }}
-            className="flex-1 py-3.5 px-4 bg-[#27272a] hover:bg-[#3f3f46] text-white font-bold text-xs sm:text-sm rounded-xl border border-[#3f3f46] transition-all cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleEmailSubmit}
-            disabled={isConnecting}
-            className="flex-1 py-3.5 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg shadow-blue-600/30 border border-blue-500/30 transition-all cursor-pointer disabled:opacity-50"
-          >
-            {isConnecting ? 'Registering...' : 'Complete Setup 🚀'}
-          </button>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-[#e4e4e7] mb-2">
+              Email Address <span className="text-blue-400">*</span>
+            </label>
+            <input
+              type="email"
+              placeholder="developer@example.com"
+              value={emailValue}
+              onChange={(e) => setEmailValue(e.target.value)}
+              className="w-full px-4 py-3 bg-[#121214] border border-[#27272a] rounded-xl text-white text-sm placeholder-[#71717a] focus:outline-none focus:border-blue-500 transition-colors"
+              autoFocus
+            />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowEmailModal(false);
+                setIsConnecting(false);
+              }}
+              className="flex-1 py-3 px-4 bg-[#27272a] hover:bg-[#3f3f46] text-[#a1a1aa] hover:text-white font-bold text-xs rounded-xl border border-[#3f3f46] transition-all cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleEmailSubmit}
+              disabled={isConnecting || !emailValue.trim()}
+              className="flex-1 py-3 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isConnecting ? 'Registering...' : 'Confirm & Connect'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   ) : null;
 
   return (
-    <div className="flex flex-col items-center gap-5 p-6 sm:p-8 rounded-3xl border border-[#27272a] shadow-2xl bg-[#18181b]/95 backdrop-blur-2xl max-w-lg w-full mx-auto relative overflow-hidden group/card">
-      {/* Background Glow */}
-      <div className="absolute -top-16 -right-16 w-52 h-52 bg-blue-500/15 rounded-full blur-3xl pointer-events-none group-hover/card:bg-blue-500/25 transition-all duration-500" />
-      <div className="absolute -bottom-16 -left-16 w-52 h-52 bg-purple-500/15 rounded-full blur-3xl pointer-events-none group-hover/card:bg-purple-500/25 transition-all duration-500" />
-
-      {/* Header Icon */}
-      <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white shadow-lg shadow-blue-500/20 transform transition-transform group-hover/card:scale-105 duration-300">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={1.75}
-          stroke="currentColor"
-          className="w-7 h-7"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3"
-          />
-        </svg>
-      </div>
-
-      {/* Card Info */}
-      <div className="text-center z-10 space-y-1.5 w-full">
-        <h3 className="text-2xl font-extrabold text-white tracking-tight">
-          Connect Stellar Wallet
-        </h3>
-        <p className="text-xs sm:text-sm text-[#a1a1aa] font-medium leading-relaxed">
-          {address
-            ? `Authenticated via ${walletName || 'Stellar Wallet'}.`
-            : 'Select Freighter, Lobstr, xBull, Hana, or Albedo to access your escrow portal.'}
-        </p>
+    <div className="flex flex-col items-center gap-2">
+      <div className="flex items-center gap-3">
+        {/* Stellar Network Indicator Badge */}
+        <span className="text-[11px] font-bold px-2.5 py-1 bg-[#1c1917] text-[#fdba74] rounded-full border border-[#442c1d] flex items-center gap-1.5 shadow-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+          Stellar Testnet
+        </span>
       </div>
 
       {/* Connected State View */}
@@ -390,9 +396,36 @@ export default function WalletConnect() {
               type="button"
               onClick={() => handleConnectAdapter(getWalletAdapter('freighter'))}
               disabled={isConnecting}
+              data-testid="connect-freighter-button"
               className="p-3 bg-[#232326] hover:bg-[#2a2a30] border border-[#333338] hover:border-blue-500/50 rounded-xl text-left transition-all cursor-pointer group"
             >
-              <div className="text-lg mb-1">🪐</div>
+              <div className="text-lg mb-1">
+                {isConnecting ? (
+                  <svg
+                    className="animate-spin w-5 h-5 text-blue-400"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    data-testid="wallet-spinner"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                ) : (
+                  '🪐'
+                )}
+              </div>
               <div className="text-xs font-bold text-white group-hover:text-blue-400">Freighter</div>
               <div className="text-[10px] text-[#a1a1aa]">Browser extension</div>
             </button>

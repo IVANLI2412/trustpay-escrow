@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { useWalletStore } from '@/store/walletStore';
 import { useRouter } from 'next/navigation';
 import { useOfflineSync, OfflineStatusPill } from '@/hooks/useOfflineSync';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import { HORIZON_URL } from '@/lib/soroban';
@@ -221,6 +222,8 @@ export function useCreateProjectForm() {
   const { address } = useWalletStore();
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof ProjectFormData, string>>>({});
+  const [isDirty, setIsDirty] = useState(false);
+  const unsavedWarning = useUnsavedChangesWarning({ isDirty });
   
   const {
     isOnline,
@@ -255,56 +258,38 @@ export function useCreateProjectForm() {
   const refreshBalance = walletBalance.refresh;
   const balanceShortfall = getBalanceShortfall(walletBalance.balance, formData.budget);
   const hasSufficientBalance = isBalanceSufficient(walletBalance.balance, formData.budget);
+  const autoFundRef = useRef<'idle' | 'waiting' | 'reloading'>('idle');
 
-  // Restore draft from IndexedDB on initial mount
-  useEffect(() => {
-    let isMounted = true;
-    async function restoreDraft() {
-      const saved = await loadDraft<ProjectFormData>('create-project-draft');
-      if (saved && isMounted && (saved.title || saved.description || saved.budget > 0)) {
-        setFormData((prev) => ({
-          ...prev,
-          ...saved,
-          client_address: address || saved.client_address || '',
-        }));
-        toast.info('Restored saved project draft from local offline storage');
-      }
-    }
-    restoreDraft();
-    return () => {
-      isMounted = false;
-    };
-  }, [loadDraft, address]);
-
-  // Auto-save project creation drafts to IndexedDB every 5 seconds
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (formData.title || formData.description || formData.budget > 0) {
-        persistDraft(formData, 'create-project-draft');
-      }
-    }, 5000);
-
-    return () => clearInterval(timer);
-  }, [formData, persistDraft]);
-
+  // Address sync
   useEffect(() => {
     if (address && formData.client_address !== address) {
       setFormData((prev) => ({ ...prev, client_address: address }));
     }
   }, [address]);
 
-  // Auto-save draft to localStorage whenever relevant fields change
+  // Load offline draft on mount if available
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (formData.title || formData.description || formData.budget > 0) {
-      try {
-        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(formData));
-        setDraftSavedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      } catch (e) {
-        console.warn('Could not auto-save draft', e);
+    let mounted = true;
+    loadDraft('create-project-draft').then((draft) => {
+      if (mounted && draft && draft.payload) {
+        setFormData((prev) => ({
+          ...prev,
+          ...draft.payload,
+          client_address: address || draft.payload.client_address || '',
+        }));
       }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [loadDraft, address]);
+
+  // Persist draft on changes
+  useEffect(() => {
+    if (formData.title || formData.description || formData.budget > 0) {
+      persistDraft('create-project-draft', formData);
     }
-  }, [formData]);
+  }, [formData, persistDraft]);
 
   // Recalculate estimated yield whenever budget, deadline, or yield_enabled changes
   useEffect(() => {
@@ -321,6 +306,7 @@ export function useCreateProjectForm() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
+    setIsDirty(true);
     let newValue: any = value;
     if (name === 'budget') {
       const parsed = parseCurrencyNumericInput(value);
@@ -345,65 +331,17 @@ export function useCreateProjectForm() {
   };
 
   const toggleYield = (enabled: boolean) => {
+    setIsDirty(true);
     setFormData((prev) => ({ ...prev, yield_enabled: enabled }));
   };
 
   const handleFileUploadMock = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const fileNames = Array.from(e.target.files).map((f) => f.name);
+      setIsDirty(true);
       setFormData((prev) => ({ ...prev, attachments: [...(prev.attachments || []), ...fileNames] }));
       toast.success(`${fileNames.length} file(s) attached (mock)`);
     }
-  };
-
-  const validateStep = (stepNumber: number): boolean => {
-    try {
-      if (stepNumber === 1) {
-        step1OverviewSchema.parse(formData);
-      } else if (stepNumber === 2) {
-        step2MilestonesSchema.parse(formData);
-      } else if (stepNumber === 3) {
-        step3TokenYieldSchema.parse(formData);
-      } else if (stepNumber === 4) {
-        projectSchema.parse(formData);
-      }
-      setErrors({});
-      return true;
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        const newErrors: Partial<Record<keyof ProjectFormData, string>> = {};
-        error.issues.forEach((err) => {
-          if (err.path[0]) {
-            newErrors[err.path[0] as keyof ProjectFormData] = err.message;
-          }
-        });
-        setErrors(newErrors);
-        const errorMessages = error.issues.map((err) => err.message).join(' • ');
-        toast.error(`Step ${stepNumber} validation failed: ${errorMessages}`);
-      }
-      return false;
-    }
-  };
-
-  const nextStep = () => {
-    if (validateStep(currentStep)) {
-      setCurrentStep((prev) => Math.min(prev + 1, 4));
-    }
-  };
-
-  const prevStep = () => {
-    setCurrentStep((prev) => Math.max(prev - 1, 1));
-  };
-
-  const clearDraft = () => {
-    try {
-      localStorage.removeItem(DRAFT_STORAGE_KEY);
-      setFormData({ ...defaultInitialData, client_address: address || '' });
-      setDraftSavedAt(null);
-      setErrors({});
-      setCurrentStep(1);
-      toast.info('Draft cleared');
-    } catch (e) {}
   };
 
   const validateForm = (): boolean => {
@@ -453,6 +391,7 @@ export function useCreateProjectForm() {
           description: `Create project draft: ${formData.title}`,
         });
         await removeDraft('create-project-draft');
+        setIsDirty(false);
         toast.warning(
           'Offline: Project creation queued in IndexedDB. Will automatically sync when connection returns!',
           { duration: 6000 }
@@ -484,7 +423,8 @@ export function useCreateProjectForm() {
       }
 
       await removeDraft('create-project-draft');
-      toast.success('Project created successfully!');
+      setIsDirty(false);
+      toast.success('Project created and escrow initialized successfully!');
       
       // Redirect to milestones creation page
       if (data.project && data.project.id) {
@@ -492,7 +432,6 @@ export function useCreateProjectForm() {
       } else {
         setFormData({ ...defaultInitialData, client_address: address || '' });
         setErrors({});
-        setCurrentStep(1);
       }
     } catch (error: any) {
       toast.error(error.message);
@@ -561,6 +500,9 @@ export function useCreateProjectForm() {
     balanceShortfall,
     hasSufficientBalance,
     refreshBalance: walletBalance.refresh,
+    isDirty,
+    setIsDirty,
+    unsavedWarning,
   };
 }
 

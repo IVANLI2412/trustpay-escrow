@@ -4,6 +4,7 @@ import { milestoneArraySchema, MilestoneFormData } from '@/lib/validators';
 import { z } from 'zod';
 import { useRouter } from 'next/navigation';
 import { authFetch } from '@/lib/api';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 
 const getApiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -55,6 +56,8 @@ export interface UseMilestonesFormOptions {
 export function useMilestonesForm(projectId: string, options: UseMilestonesFormOptions = {}) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const unsavedWarning = useUnsavedChangesWarning({ isDirty });
   const totalBudget = options.totalBudget || 0;
   
   const [errors, setErrors] = useState<Array<Partial<Record<keyof MilestoneFormData, string>>>>([{}]);
@@ -104,6 +107,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
+    setIsDirty(true);
     const numericFields = ['amount', 'milestone_index', 'revision_limit'];
     const newValue = numericFields.includes(name) ? Number(value) : value;
 
@@ -123,6 +127,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
   };
 
   const reorderMilestones = useCallback((fromIndex: number, toIndex: number) => {
+    setIsDirty(true);
     setMilestones((prev) => {
       if (toIndex < 0 || toIndex >= prev.length) return prev;
       const reordered = [...prev];
@@ -137,6 +142,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
       const targetBudget = budgetOverride || totalBudget;
       if (targetBudget <= 0 || milestones.length === 0) return;
 
+      setIsDirty(true);
       const count = milestones.length;
       const baseAmt = Math.floor((targetBudget / count) * 100) / 100;
       let allocated = 0;
@@ -158,6 +164,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
   );
 
   const addMilestone = () => {
+    setIsDirty(true);
     const nextIdx = milestones.length;
     const remaining = totalBudget > 0 ? Math.max(0, totalBudget - totalAllocatedAmount) : 0;
     setMilestones((prev) => [
@@ -177,6 +184,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
 
   const removeMilestone = (index: number) => {
     if (milestones.length <= 1) return;
+    setIsDirty(true);
     setMilestones((prev) => {
       const newM = [...prev];
       newM.splice(index, 1);
@@ -249,6 +257,7 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
         return;
       }
 
+      setIsDirty(false);
       router.push(`/projects/${projectId}`);
     } finally {
       setLoading(false);
@@ -269,5 +278,8 @@ export function useMilestonesForm(projectId: string, options: UseMilestonesFormO
     addMilestone,
     removeMilestone,
     handleSubmit,
+    isDirty,
+    setIsDirty,
+    unsavedWarning,
   };
 }

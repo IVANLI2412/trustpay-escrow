@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { SupportedWalletId } from '@/lib/wallet-adapters';
+import { clearPersistedDashboardState } from '@/hooks/usePersistentTab';
 
 // Safe storage resolver that handles browser localStorage and falls back gracefully in tests/SSR
 const getStorageProvider = () => {
@@ -66,6 +67,10 @@ export interface WalletState {
   isArbiter: boolean;
   token: string | null;
   isConnecting: boolean;
+  orgAccounts: OrgWalletAccount[];
+  activeOrgAccountId: string | null;
+  roleFilterStates: Record<ActiveRole, RoleFilterState>;
+  pendingMultisig: PendingMultisigRequest[];
   setIsConnecting: (isConnecting: boolean) => void;
   setActiveRole: (role: ActiveRole) => void;
   /** Replaces the in-memory SEP-0010 JWT (e.g. after a silent refresh). */
@@ -104,8 +109,24 @@ export const useWalletStore = create<WalletState>()(
       isArbiter: true,
       token: null,
       isConnecting: false,
+      orgAccounts: [],
+      activeOrgAccountId: null,
+      roleFilterStates: {
+        client: { status: 'all', search: '', category: 'All' },
+        freelancer: { status: 'all', search: '', category: 'All' },
+        arbiter: { status: 'disputed', search: '', category: 'All' },
+      },
+      pendingMultisig: [],
       setIsConnecting: (isConnecting) => set({ isConnecting }),
       setActiveRole: (activeRole) => set({ activeRole }),
+      setToken: (token) => set({ token }),
+      setRoleFilter: (role, filters) =>
+        set((state) => ({
+          roleFilterStates: {
+            ...state.roleFilterStates,
+            [role]: { ...state.roleFilterStates[role], ...filters },
+          },
+        })),
       setWalletInfo: (
         address,
         isClient = true,
@@ -114,7 +135,52 @@ export const useWalletStore = create<WalletState>()(
         token = null,
         walletType = 'freighter'
       ) =>
-        set({ address, isClient, isFreelancer, walletName, token, walletType }),
+        set({ address, isClient, isFreelancer, walletName, token, walletType, isConnecting: false }),
+      addOrgAccount: ({ label, address, walletName }) =>
+        set((state) => {
+          const trimmedLabel = label.trim() || 'Organization wallet';
+          const existing = state.orgAccounts.find(
+            (account) => account.address.toUpperCase() === address.toUpperCase()
+          );
+          if (existing) {
+            return {
+              orgAccounts: state.orgAccounts.map((account) =>
+                account.id === existing.id ? { ...account, label: trimmedLabel, walletName } : account
+              ),
+              activeOrgAccountId: existing.id,
+            };
+          }
+          const account: OrgWalletAccount = {
+            id: `org-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            label: trimmedLabel,
+            address,
+            walletName,
+            addedAt: new Date().toISOString(),
+          };
+          return { orgAccounts: [...state.orgAccounts, account], activeOrgAccountId: account.id };
+        }),
+      removeOrgAccount: (id) =>
+        set((state) => ({
+          orgAccounts: state.orgAccounts.filter((account) => account.id !== id),
+          activeOrgAccountId: state.activeOrgAccountId === id ? null : state.activeOrgAccountId,
+        })),
+      setActiveOrgAccount: (activeOrgAccountId) => set({ activeOrgAccountId }),
+      addPendingMultisig: (request) => {
+        const id = `msig-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        set((state) => ({
+          pendingMultisig: [
+            { ...request, id, createdAt: new Date().toISOString() },
+            ...state.pendingMultisig,
+          ],
+        }));
+        return id;
+      },
+      updatePendingMultisig: (id, xdr) =>
+        set((state) => ({
+          pendingMultisig: state.pendingMultisig.map((r) => (r.id === id ? { ...r, xdr } : r)),
+        })),
+      removePendingMultisig: (id) =>
+        set((state) => ({ pendingMultisig: state.pendingMultisig.filter((r) => r.id !== id) })),
       disconnect: () => {
         try {
           const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -123,7 +189,9 @@ export const useWalletStore = create<WalletState>()(
           // ignore network error on logout
         }
         // Drop persisted tab/filter context so the next wallet starts clean (#177)
-        clearPersistedDashboardState();
+        try {
+          clearPersistedDashboardState();
+        } catch {}
         set({
           address: null,
           walletName: null,
@@ -134,6 +202,9 @@ export const useWalletStore = create<WalletState>()(
           isArbiter: true,
           token: null,
           isConnecting: false,
+          orgAccounts: [],
+          activeOrgAccountId: null,
+          pendingMultisig: [],
         });
       },
     }),
@@ -142,7 +213,7 @@ export const useWalletStore = create<WalletState>()(
       storage: createJSONStorage(getStorageProvider),
       // The SEP-0010 JWT is kept in memory only; the httpOnly cookie restores it after a reload.
       partialize: (state) => {
-        const { token: _token, ...persisted } = state;
+        const { token: _token, isConnecting: _isConnecting, ...persisted } = state;
         return persisted;
       },
     }

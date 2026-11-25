@@ -55,6 +55,7 @@ import {
   PendingSignaturesDrawer,
 } from '@/components/MultisigApprovalModal';
 import type { PendingMultisigRequest } from '@/store/walletStore';
+import { EmptyState } from '@/components/EmptyState';
 import { ProjectActionsDropdown } from '@/components/ProjectActionsDropdown';
 import { OfflineStatusPill } from '@/components/OfflineStatusPill';
 
@@ -1070,17 +1071,10 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
             {loading ? (
               <ProjectCardSkeletonList count={3} />
             ) : projects.length === 0 ? (
-              <div className="text-center py-12 bg-[#1c1c20]/50 border border-[#27272a] rounded-xl">
-                <p className="text-[#a1a1aa] text-sm mb-4">
-                  No projects created yet in the database.
-                </p>
-                <button
-                  onClick={() => setActiveTab('create')}
-                  className="px-4 py-2 bg-[#27272a] text-white font-semibold text-xs rounded-xl border border-[#3f3f46]"
-                >
-                  Create Your First Project
-                </button>
-              </div>
+<EmptyState
+                type="projects"
+                onAction={() => setActiveTab('create')}
+              />
             ) : visibleProjects.length === 0 ? (
               <div className="rounded-xl border border-[#27272a] bg-[#1c1c20]/50 py-12 text-center">
                 <p className="text-sm text-[#a1a1aa]">
