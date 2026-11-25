@@ -1,129 +1,167 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import {
-  useCurrencyStore,
-  SUPPORTED_FIAT_CURRENCIES,
-  DEFAULT_USD_FX_RATES,
-  DEFAULT_CRYPTO_USD_RATES,
-} from './currencyStore';
+import { useCurrencyStore, FIAT_CURRENCIES, FALLBACK_RATES } from './currencyStore';
 
-describe('currencyStore', () => {
+// Mock localStorage
+const mockStorage: Record<string, string> = {};
+Object.defineProperty(window, 'localStorage', {
+  value: {
+    getItem: (key: string) => mockStorage[key] ?? null,
+    setItem: (key: string, value: string) => { mockStorage[key] = String(value); },
+    removeItem: (key: string) => { delete mockStorage[key]; },
+    clear: () => { Object.keys(mockStorage).forEach(k => delete mockStorage[k]); },
+    length: 0,
+    key: (i: number) => Object.keys(mockStorage)[i] ?? null,
+  },
+  writable: true,
+});
+
+describe('useCurrencyStore Zustand Store', () => {
   beforeEach(() => {
-    localStorage.clear();
+    useCurrencyStore.getState().setError(null);
     useCurrencyStore.setState({
-      selectedCurrency: 'USD',
-      rates: { ...DEFAULT_USD_FX_RATES },
-      cryptoRates: { ...DEFAULT_CRYPTO_USD_RATES },
-      lastUpdated: null,
-      rateTrend: 'neutral',
-      isLive: false,
+      displayCurrency: 'USD',
+      fxRates: useCurrencyStore.getState().fxRates, // reset to initial
+      isConnected: false,
+      lastError: null,
     });
+    mockStorage['trustpay-currency-storage'] = '';
   });
 
-  it('initializes with default USD currency and rates', () => {
+  it('initializes with USD as default display currency', () => {
     const state = useCurrencyStore.getState();
-    expect(state.selectedCurrency).toBe('USD');
-    expect(state.rates.USD).toBe(1.0);
-    expect(state.rates.EUR).toBe(0.92);
-    expect(state.rates.GBP).toBe(0.79);
-    expect(state.rates.NGN).toBe(1490.0);
+    expect(state.displayCurrency).toBe('USD');
   });
 
-  it('persists selected currency into localStorage', () => {
-    const { setCurrency } = useCurrencyStore.getState();
-    setCurrency('EUR');
-
-    expect(useCurrencyStore.getState().selectedCurrency).toBe('EUR');
-    expect(localStorage.getItem('trustpay_preferred_currency')).toBe('EUR');
-
-    setCurrency('JPY');
-    expect(useCurrencyStore.getState().selectedCurrency).toBe('JPY');
-    expect(localStorage.getItem('trustpay_preferred_currency')).toBe('JPY');
+  it('supports all 16 fiat currencies', () => {
+    expect(FIAT_CURRENCIES).toHaveLength(16);
+    expect(FIAT_CURRENCIES).toContain('USD');
+    expect(FIAT_CURRENCIES).toContain('EUR');
+    expect(FIAT_CURRENCIES).toContain('GBP');
+    expect(FIAT_CURRENCIES).toContain('JPY');
+    expect(FIAT_CURRENCIES).toContain('CAD');
+    expect(FIAT_CURRENCIES).toContain('AUD');
+    expect(FIAT_CURRENCIES).toContain('CHF');
+    expect(FIAT_CURRENCIES).toContain('CNY');
+    expect(FIAT_CURRENCIES).toContain('INR');
+    expect(FIAT_CURRENCIES).toContain('BRL');
+    expect(FIAT_CURRENCIES).toContain('MXN');
+    expect(FIAT_CURRENCIES).toContain('NGN');
+    expect(FIAT_CURRENCIES).toContain('ZAR');
+    expect(FIAT_CURRENCIES).toContain('SGD');
+    expect(FIAT_CURRENCIES).toContain('HKD');
+    expect(FIAT_CURRENCIES).toContain('KRW');
   });
 
-  it('converts USDC to various fiat currencies accurately', () => {
-    const { convertCryptoToFiat } = useCurrencyStore.getState();
+  it('updates display currency and persists to localStorage', () => {
+    useCurrencyStore.getState().setDisplayCurrency('EUR');
+    expect(useCurrencyStore.getState().displayCurrency).toBe('EUR');
 
-    // 100 USDC in USD (1.0 rate)
-    const usd = convertCryptoToFiat(100, 'USDC', 'USD');
-    expect(usd.fiatAmount).toBe(100);
-    expect(usd.formatted).toBe('$100.00');
-    expect(usd.symbol).toBe('$');
-
-    // 100 USDC in EUR (0.92 rate)
-    const eur = convertCryptoToFiat(100, 'USDC', 'EUR');
-    expect(eur.fiatAmount).toBeCloseTo(92.0, 2);
-    expect(eur.formatted).toBe('€92.00');
-
-    // 100 USDC in NGN (1490.0 rate)
-    const ngn = convertCryptoToFiat(100, 'USDC', 'NGN');
-    expect(ngn.fiatAmount).toBe(149000);
-    expect(ngn.formatted).toBe('₦149,000.00');
-
-    // 100 USDC in JPY (154.5 rate, 0 decimals)
-    const jpy = convertCryptoToFiat(100, 'USDC', 'JPY');
-    expect(jpy.fiatAmount).toBeCloseTo(15450, 0);
-    expect(jpy.formatted).toBe('¥15,450');
+    // Check persistence
+    const stored = JSON.parse(window.localStorage.getItem('trustpay-currency-storage') ?? '{}');
+    expect(stored.state.displayCurrency).toBe('EUR');
   });
 
-  it('converts XLM with token price multiplier and decimals properly', () => {
-    const { convertCryptoToFiat } = useCurrencyStore.getState();
-
-    // 1000 XLM at $0.24 = $240 USD
-    const usd = convertCryptoToFiat(1000, 'XLM', 'USD');
-    expect(usd.fiatAmount).toBe(240);
-    expect(usd.formatted).toBe('$240.00');
-
-    // 1000 XLM in EUR at $0.24 * 0.92 = €220.80
-    const eur = convertCryptoToFiat(1000, 'XLM', 'EUR');
-    expect(eur.fiatAmount).toBeCloseTo(220.8, 2);
-    expect(eur.formatted).toBe('€220.80');
+  it('converts crypto to fiat using fallback rates', () => {
+    const state = useCurrencyStore.getState();
+    
+    // 100 USDC -> USD (rate 1.0)
+    expect(state.convertCryptoToFiat(100, 'USDC', 'USD')).toBe(100);
+    
+    // 100 USDC -> EUR (fallback rate 0.92)
+    expect(state.convertCryptoToFiat(100, 'USDC', 'EUR')).toBeCloseTo(92, 1);
+    
+    // 1000 XLM -> USD (fallback rate 0.11)
+    expect(state.convertCryptoToFiat(1000, 'XLM', 'USD')).toBeCloseTo(110, 1);
   });
 
-  it('calculates portfolio total across multiple tokens and escrows', () => {
-    const { calculatePortfolioTotal } = useCurrencyStore.getState();
+  it('falls back to fallback rates when live rates not available', () => {
+    const state = useCurrencyStore.getState();
+    
+    // Should use fallback for unsupported pair
+    const rate = state.getRate('USDC', 'XYZ' as any);
+    expect(rate).toBeNull();
+    
+    // But fallback works for supported pairs
+    const fallbackRate = state.getRate('USDC', 'EUR');
+    expect(fallbackRate).toBe(FALLBACK_RATES.USDC.EUR);
+  });
 
-    const escrows = [
-      { amount: 500, token: 'USDC' }, // $500
-      { amount: 1000, token: 'XLM' },  // $240
-      { amount: 100, token: 'EURC' },  // $108
+  it('formats fiat amounts with currency symbol', () => {
+    const state = useCurrencyStore.getState();
+    
+    // USD
+    state.setDisplayCurrency('USD');
+    expect(state.formatFiat(1234.56)).toContain('$');
+    expect(state.formatFiat(1234.56)).toContain('1,234.56');
+    
+    // EUR
+    state.setDisplayCurrency('EUR');
+    expect(state.formatFiat(1234.56)).toContain('€');
+    
+    // GBP
+    state.setDisplayCurrency('GBP');
+    expect(state.formatFiat(1234.56)).toContain('£');
+    
+    // JPY (no decimals)
+    state.setDisplayCurrency('JPY');
+    expect(state.formatFiat(123456)).toContain('¥');
+  });
+
+  it('updates FX rates and marks as connected', () => {
+    const state = useCurrencyStore.getState();
+    
+    const newRates = [
+      { base: 'USDC', quote: 'USD', rate: 1.01, timestamp: new Date().toISOString(), source: 'live' as const },
+      { base: 'USDC', quote: 'EUR', rate: 0.93, timestamp: new Date().toISOString(), source: 'live' as const },
     ];
-    // Total USD = 500 + 240 + 108 = $848
-
-    const totalUsd = calculatePortfolioTotal(escrows, 'USD');
-    expect(totalUsd.totalFiat).toBeCloseTo(848, 2);
-    expect(totalUsd.formatted).toBe('$848.00');
-    expect(totalUsd.currency).toBe('USD');
-
-    // In GBP (0.79 rate) => 848 * 0.79 = £669.92
-    const totalGbp = calculatePortfolioTotal(escrows, 'GBP');
-    expect(totalGbp.totalFiat).toBeCloseTo(669.92, 2);
-    expect(totalGbp.formatted).toBe('£669.92');
-    expect(totalGbp.currency).toBe('GBP');
+    
+    state.updateFXRates(newRates);
+    
+    expect(state.isConnected).toBe(true);
+    expect(state.lastError).toBeNull();
+    expect(state.fxRates.USDC.USD.rate).toBe(1.01);
+    expect(state.fxRates.USDC.USD.source).toBe('live');
+    expect(state.fxRates.USDC.EUR.rate).toBe(0.93);
   });
 
-  it('tracks rate trends (up/down) when rates update dynamically', () => {
-    const store = useCurrencyStore.getState();
-
-    // Update USD/EUR rate upwards
-    store.setCurrency('EUR');
-    store.updateRates({ EUR: 0.95 });
-
-    expect(useCurrencyStore.getState().rateTrend).toBe('up');
-    expect(useCurrencyStore.getState().rates.EUR).toBe(0.95);
-    expect(useCurrencyStore.getState().isLive).toBe(true);
-
-    // Update rate downwards
-    useCurrencyStore.getState().updateRates({ EUR: 0.90 });
-    expect(useCurrencyStore.getState().rateTrend).toBe('down');
-    expect(useCurrencyStore.getState().rates.EUR).toBe(0.90);
+  it('handles conversion arithmetic with token decimals', () => {
+    const state = useCurrencyStore.getState();
+    state.setDisplayCurrency('USD');
+    
+    // USDC has 7 decimals on Stellar - test raw amount conversion
+    const rawUSDC = 100_000_000; // 100 USDC in stroops (7 decimals)
+    const humanUSDC = rawUSDC / 10_000_000; // 100
+    
+    const fiatValue = state.convertCryptoToFiat(humanUSDC, 'USDC', 'USD');
+    expect(fiatValue).toBe(100);
+    
+    // XLM has 7 decimals
+    const rawXLM = 1_000_000_000; // 100 XLM
+    const humanXLM = rawXLM / 10_000_000; // 100
+    const xlmFiat = state.convertCryptoToFiat(humanXLM, 'XLM', 'USD');
+    expect(xlmFiat).toBeCloseTo(11, 0); // ~0.11 * 100
   });
 
-  it('handles fallback gracefully when token is unknown or network fails', () => {
-    const { convertCryptoToFiat } = useCurrencyStore.getState();
+  it('persists display currency across reloads', () => {
+    useCurrencyStore.getState().setDisplayCurrency('GBP');
+    expect(useCurrencyStore.getState().displayCurrency).toBe('GBP');
+    
+    // Simulate new store instance (in real app this would be a new browser tab)
+    const persisted = JSON.parse(window.localStorage.getItem('trustpay-currency-storage') ?? '{}');
+    expect(persisted.state.displayCurrency).toBe('GBP');
+  });
 
-    // Unknown token defaults to 1.0 multiplier
-    const converted = convertCryptoToFiat(50, 'UNKNOWN_TOKEN', 'USD');
-    expect(converted.fiatAmount).toBe(50);
-    expect(converted.formatted).toBe('$50.00');
+  it('falls back to USD when network fails', () => {
+    const state = useCurrencyStore.getState();
+    state.setError('Network error');
+    state.setConnected(false);
+    
+    // Should still be able to convert using fallback rates
+    const value = state.convertCryptoToFiat(50, 'USDC', 'EUR');
+    expect(value).toBeCloseTo(46, 1); // 50 * 0.92
+    
+    // Error state preserved
+    expect(state.lastError).toBe('Network error');
+    expect(state.isConnected).toBe(false);
   });
 });

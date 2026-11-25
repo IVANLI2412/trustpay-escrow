@@ -1,228 +1,255 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  useCurrencyStore,
-  SUPPORTED_FIAT_CURRENCIES,
-  FiatCurrency,
-} from '@/store/currencyStore';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
+import React, { useEffect, useState, useMemo } from 'react';
+import { useCurrencyStore, FIAT_CURRENCIES, FiatCurrency, FXRate, CryptoCurrency, startFXPolling, fetchLiveFXRates } from '@/store/currencyStore';
+import { SUPPORTED_TOKENS, CryptoCurrency as TokenSymbol } from '@/config/tokens';
+import { useWalletStore, useActiveWalletAddress } from '@/store/walletStore';
+import { useTokenBalances } from '@/hooks/useCreateProjectForm';
 
-export interface CurrencyConverterWidgetProps {
-  variant?: 'compact' | 'full' | 'dropdown-only';
-  portfolioItems?: Array<{ amount: number | string; token: string }>;
-  className?: string;
+interface BalanceItem {
+  symbol: CryptoCurrency;
+  balance: number;
+  fiatValue: number;
+  rate: FXRate | null;
 }
 
-export function CurrencyConverterWidget({
-  variant = 'compact',
-  portfolioItems = [],
-  className = '',
-}: CurrencyConverterWidgetProps) {
+export function CurrencyConverterWidget() {
   const {
-    selectedCurrency,
-    rates,
-    cryptoRates,
-    rateTrend,
-    isLive,
-    setCurrency,
-    updateRates,
-    convertCryptoToFiat,
-    calculatePortfolioTotal,
+    displayCurrency,
+    fxRates,
+    isConnected,
+    lastError,
+    setDisplayCurrency,
+    convertCryptoToDisplayCurrency,
+    formatFiat,
+    getRate,
   } = useCurrencyStore();
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const [flashColor, setFlashColor] = useState<'green' | 'red' | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const { address } = useWalletStore();
+  const activeWalletAddress = useActiveWalletAddress();
+  const [isPolling, setIsPolling] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
-  useEscapeKey(() => setIsOpen(false), isOpen);
+  // Fetch token balances using existing hook
+  const { balances, loading: balancesLoading } = useTokenBalances(activeWalletAddress);
 
-  // Close dropdown on outside click
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen]);
+  // Compute balance items with fiat conversion
+  const balanceItems: BalanceItem[] = useMemo(() => {
+    if (!balances || balancesLoading) return [];
 
-  // Flash animation trigger on rateTrend change
-  useEffect(() => {
-    if (rateTrend === 'up') {
-      setFlashColor('green');
-      const timer = setTimeout(() => setFlashColor(null), 1200);
-      return () => clearTimeout(timer);
-    } else if (rateTrend === 'down') {
-      setFlashColor('red');
-      const timer = setTimeout(() => setFlashColor(null), 1200);
-      return () => clearTimeout(timer);
-    }
-  }, [rateTrend, rates]);
-
-  // Simulated live feed / heartbeat polling
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Micro-fluctuation simulation (±0.05%) to demonstrate real-time visual change flash
-      const delta = (Math.random() - 0.49) * 0.002;
-      const currentRate = rates[selectedCurrency] || 1.0;
-      const updatedRate = Number((currentRate * (1 + delta)).toFixed(4));
-
-      updateRates({
-        [selectedCurrency]: updatedRate,
+    return Object.entries(balances)
+      .filter(([symbol]) => SUPPORTED_TOKENS[symbol as TokenSymbol])
+      .map(([symbol, balance]) => {
+        const crypto = symbol as CryptoCurrency;
+        const fiatValue = convertCryptoToDisplayCurrency(balance, crypto);
+        const rate = fxRates[crypto]?.[displayCurrency] ?? null;
+        return { symbol: crypto, balance, fiatValue, rate };
       });
-    }, 15000);
+  }, [balances, balancesLoading, fxRates, displayCurrency, convertCryptoToDisplayCurrency]);
 
-    return () => clearInterval(interval);
-  }, [selectedCurrency, rates, updateRates]);
-
-  const currentMeta = SUPPORTED_FIAT_CURRENCIES[selectedCurrency] || SUPPORTED_FIAT_CURRENCIES.USD;
-  const portfolio = calculatePortfolioTotal(portfolioItems);
-
-  const filteredCurrencies = Object.values(SUPPORTED_FIAT_CURRENCIES).filter((c) =>
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.code.toLowerCase().includes(search.toLowerCase()) ||
-    c.symbol.toLowerCase().includes(search.toLowerCase())
+  // Total portfolio value in display currency
+  const totalPortfolioValue = useMemo(
+    () => balanceItems.reduce((sum, item) => sum + item.fiatValue, 0),
+    [balanceItems]
   );
 
+  // Start/stop polling based on connection
+  useEffect(() => {
+    if (!address) {
+      setIsPolling(false);
+      return;
+    }
+    setIsPolling(true);
+    const cleanup = startFXPolling(60000);
+    return () => {
+      setIsPolling(false);
+      cleanup();
+    };
+  }, [address]);
+
+  // Manual refresh handler
+  const handleRefresh = async () => {
+    try {
+      const rates = await fetchLiveFXRates();
+      useCurrencyStore.getState().updateFXRates(rates);
+    } catch (error) {
+      console.error('[CurrencyConverterWidget] Manual refresh failed:', error);
+    }
+  };
+
+  // Format rate change indicator
+  const getRateChangeClass = (rate: FXRate | null) => {
+    if (!rate || rate.source === 'fallback') return '';
+    // In a real app, compare with previous rate
+    return 'text-green-600 dark:text-green-400';
+  };
+
+  if (!address) {
+    return (
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 text-center text-gray-500 dark:text-gray-400">
+        Connect wallet to view portfolio value in {displayCurrency}
+      </div>
+    );
+  }
+
   return (
-    <div
-      ref={dropdownRef}
-      className={`relative inline-flex items-center text-xs ${className}`}
-      data-testid="currency-converter-widget"
-    >
-      {/* Portfolio Value Badge (if items provided) */}
-      {portfolioItems.length > 0 && variant !== 'dropdown-only' && (
-        <div
-          className={`flex items-center gap-1.5 px-2.5 py-1 mr-2 rounded-md border text-xs font-medium transition-colors duration-300 ${
-            flashColor === 'green'
-              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
-              : flashColor === 'red'
-              ? 'bg-rose-500/15 border-rose-500/40 text-rose-400'
-              : 'bg-neutral-900/60 border-neutral-800 text-neutral-300'
-          }`}
-          data-testid="portfolio-value-badge"
-          title={`Estimated portfolio value across all escrows in ${selectedCurrency}`}
-        >
-          <span className="text-neutral-500 font-normal">≈</span>
-          <span className="font-semibold text-neutral-100">{portfolio.formatted}</span>
-          <span className="text-[10px] text-neutral-400 uppercase tracking-wider">{selectedCurrency}</span>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+          Portfolio Value
+        </h3>
+        <div className="flex items-center gap-2">
+          {/* Currency Selector */}
+          <select
+            value={displayCurrency}
+            onChange={(e) => setDisplayCurrency(e.target.value as FiatCurrency)}
+            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            aria-label="Display currency"
+          >
+            {FIAT_CURRENCIES.map((currency) => (
+              <option key={currency} value={currency}>
+                {currency}
+              </option>
+            ))}
+          </select>
+
+          {/* Connection Status */}
+          <span
+            className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
+              isConnected
+                ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400'
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isConnected ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'
+              }`}
+            />
+            {isConnected ? 'Live' : 'Fallback'}
+          </span>
+
+          {/* Refresh Button */}
+          <button
+            onClick={handleRefresh}
+            disabled={isPolling}
+            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            aria-label="Refresh exchange rates"
+          >
+            <svg
+              className={`w-5 h-5 ${isPolling ? 'animate-spin' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+          </button>
+
+          {/* Expand/Collapse */}
+          <button
+            onClick={() => setShowDetails(!showDetails)}
+            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            aria-label={showDetails ? 'Collapse details' : 'Expand details'}
+          >
+            <svg
+              className={`w-5 h-5 transition-transform ${showDetails ? 'rotate-180' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Total Portfolio Value */}
+      <div className="mb-4">
+        <div className="text-3xl font-bold text-gray-900 dark:text-white">
+          {formatFiat(totalPortfolioValue)}
+        </div>
+        <div className="text-sm text-gray-500 dark:text-gray-400">
+          Total across {balanceItems.length} asset{balanceItems.length !== 1 ? 's' : ''}
+        </div>
+        {lastError && (
+          <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+            ⚠ {lastError}
+          </div>
+        )}
+      </div>
+
+      {/* Details Panel */}
+      {showDetails && balanceItems.length > 0 && (
+        <div className="mt-4 space-y-2 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Asset Breakdown
+          </h4>
+          <div className="space-y-1">
+            {balanceItems.map((item) => {
+              const tokenConfig = SUPPORTED_TOKENS[item.symbol];
+              const rate = item.rate;
+              return (
+                <div
+                  key={item.symbol}
+                  className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 dark:bg-gray-900/50"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="text-xl"
+                      aria-hidden="true"
+                    >
+                      {tokenConfig?.icon || item.symbol}
+                    </span>
+                    <div>
+                      <div className="text-sm font-medium text-gray-900 dark:text-white">
+                        {item.symbol}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {item.balance.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 7,
+                        })} {item.symbol}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-semibold text-gray-900 dark:text-white">
+                      {formatFiat(item.fiatValue)}
+                    </div>
+                    <div
+                      className={`text-xs ${getRateChangeClass(rate)}`}
+                    >
+                      1 {item.symbol} = {rate?.rate.toLocaleString(undefined, { maximumFractionDigits: 4 })} {displayCurrency}
+                      {rate?.source === 'fallback' && ' (est.)'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Currency Selector Button */}
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-700/80 bg-neutral-900/80 hover:bg-neutral-800/80 text-neutral-200 transition-all focus:outline-none focus:ring-1 focus:ring-sky-500 ${
-          flashColor === 'green'
-            ? 'ring-1 ring-emerald-500/60'
-            : flashColor === 'red'
-            ? 'ring-1 ring-rose-500/60'
-            : ''
-        }`}
-        aria-expanded={isOpen}
-        aria-haspopup="listbox"
-        aria-label="Select display fiat currency"
-        data-testid="currency-selector-button"
-      >
-        <span className="text-sm leading-none">{currentMeta.flag}</span>
-        <span className="font-semibold">{currentMeta.code}</span>
-        <span className="text-neutral-400 text-[10px]">({currentMeta.symbol})</span>
-
-        {/* Live indicator pip */}
-        <span
-          className={`w-1.5 h-1.5 rounded-full ml-0.5 ${
-            isLive ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'
-          }`}
-          title={isLive ? 'Live FX rates active' : 'Offline baseline rates'}
-        />
-
-        <svg
-          className={`w-3.5 h-3.5 text-neutral-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {/* Dropdown Menu */}
-      {isOpen && (
-        <div
-          className="absolute right-0 top-full mt-1.5 w-64 rounded-xl border border-neutral-800 bg-neutral-950/95 backdrop-blur-md shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
-          role="listbox"
-          data-testid="currency-dropdown"
-        >
-          {/* Search Input */}
-          <div className="relative mb-2">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search 15+ currencies..."
-              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-neutral-800 bg-neutral-900/90 text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:border-sky-500"
-              autoFocus
-              data-testid="currency-search-input"
-            />
-          </div>
-
-          {/* Currency List */}
-          <div className="max-h-56 overflow-y-auto space-y-0.5 pr-1 scrollbar-thin">
-            {filteredCurrencies.map((c) => {
-              const isSelected = c.code === selectedCurrency;
-              const rate = rates[c.code] || 1.0;
-
-              return (
-                <button
-                  key={c.code}
-                  type="button"
-                  onClick={() => {
-                    setCurrency(c.code);
-                    setIsOpen(false);
-                    setSearch('');
-                  }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
-                    isSelected
-                      ? 'bg-sky-500/15 text-sky-400 font-semibold'
-                      : 'hover:bg-neutral-800/60 text-neutral-300'
-                  }`}
-                  role="option"
-                  aria-selected={isSelected}
-                  data-testid={`currency-option-${c.code}`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <span className="text-sm">{c.flag}</span>
-                    <div className="flex flex-col text-left">
-                      <span className="truncate">{c.name}</span>
-                      <span className="text-[10px] text-neutral-500">{c.code} · {c.symbol}</span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] text-neutral-400 font-mono ml-2">
-                    {rate > 100 ? Math.round(rate) : rate.toFixed(2)}
-                  </span>
-                </button>
-              );
-            })}
-
-            {filteredCurrencies.length === 0 && (
-              <div className="py-4 text-center text-xs text-neutral-500">
-                No matching currencies found
-              </div>
-            )}
-          </div>
-
-          {/* Quick Rates Ticker Footer */}
-          <div className="mt-2 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[10px] text-neutral-400 px-1">
-            <span>1 XLM ≈ {convertCryptoToFiat(1, 'XLM').formatted}</span>
-            <span>1 USDC ≈ {convertCryptoToFiat(1, 'USDC').formatted}</span>
+      {/* Error Banner */}
+      {lastError && !showDetails && (
+        <div className="mt-3 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-red-700 dark:text-red-300">
+              Using fallback rates: {lastError}
+            </span>
+            <button
+              onClick={handleRefresh}
+              className="text-xs text-red-700 dark:text-red-300 hover:underline"
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}
@@ -230,30 +257,13 @@ export function CurrencyConverterWidget({
   );
 }
 
-/**
- * Compact Inline Badge that automatically renders the converted fiat equivalent of any crypto token balance.
- */
-export function ConvertedFiatBadge({
-  amount,
-  token,
-  showApprox = true,
-  className = '',
-}: {
-  amount: number | string;
-  token: string;
-  showApprox?: boolean;
-  className?: string;
-}) {
-  const { convertCryptoToFiat } = useCurrencyStore();
-  const converted = convertCryptoToFiat(amount, token);
-
+// Compact version for dashboard badges
+export function CurrencyBadge({ amount, crypto }: { amount: number; crypto: CryptoCurrency }) {
+  const { displayCurrency, convertCryptoToDisplayCurrency, formatFiat } = useCurrencyStore();
+  const fiatValue = convertCryptoToDisplayCurrency(amount, crypto);
   return (
-    <span
-      className={`inline-flex items-center text-neutral-400 font-normal ${className}`}
-      data-testid="converted-fiat-badge"
-    >
-      {showApprox && <span className="mr-0.5">≈</span>}
-      {converted.formatted}
+    <span className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-sm font-medium text-gray-900 dark:text-white">
+      {formatFiat(fiatValue)}
     </span>
   );
 }

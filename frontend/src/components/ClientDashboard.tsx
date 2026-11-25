@@ -16,7 +16,26 @@ import { ProjectChatModal } from './ProjectChatModal';
 import { MilestoneBuilderCanvas } from './MilestoneBuilderCanvas';
 import { ProjectCardSkeletonList } from '@/components/skeletons';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
-import { useOfflineSync, OfflineStatusPill } from '@/hooks/useOfflineSync';
+import { useTokenBalance, useTokenBalances, getBalanceShortfall } from '@/hooks/useCreateProjectForm';
+import { TokenSelector } from '@/components/TokenSelector';
+import { usePersistentTab } from '@/hooks/usePersistentTab';
+import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
+import { LiquidityDepthOptimizer } from '@/components/LiquidityDepthOptimizer';
+import { TokenPriceAlertWidget } from '@/components/TokenPriceAlertWidget';
+import { StarredFreelancersList } from '@/components/StarredFreelancersList';
+import { NotificationScheduleModal } from '@/components/NotificationScheduleModal';
+import { ProposalCounterOfferModal } from '@/components/ProposalCounterOfferModal';
+import { useStarredFreelancers } from '@/hooks/useStarredFreelancers';
+import type { CounterOffer } from '@/lib/counter-offer';
+import { showSorobanErrorToast } from '@/components/SorobanErrorToast';
+import { ProjectAuditLog } from '@/components/ProjectAuditLog';
+import { CalendarExportButton } from '@/components/CalendarExportButton';
+import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { AccountsPayableExportModal } from '@/components/AccountsPayableExportModal';
+import { GasFeeEstimatorWidget } from '@/components/GasFeeEstimatorWidget';
+import { BlendYieldVisualizer } from '@/components/BlendYieldVisualizer';
+import { CurrencyConverterWidget } from '@/components/CurrencyConverterWidget';
+import { BLEND_ALLOCATION_RATIO } from '@/lib/blend-yield';
 import {
   createProjectOnChain,
   lockEscrowOnChain,
@@ -927,9 +946,10 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
 
         {/* Network fee gauge and token price alerts (#256, #253) */}
         {activeTab === 'projects' && (
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-3">
             <GasFeeEstimatorWidget onFeeSelected={(feeStroops) => setSorobanBaseFee(feeStroops)} />
             <TokenPriceAlertWidget />
+            <CurrencyConverterWidget />
           </div>
         )}
 
