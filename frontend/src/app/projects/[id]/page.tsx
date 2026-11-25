@@ -1732,6 +1732,27 @@ export default function ProjectDetailsPage() {
                 Close
               </Button>
             )}
+
+            {txState.stage === 'polling' && txState.txHash && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // In a real implementation, we'd retrieve the innerTxXdr from storage
+                  // For now, we'll use a placeholder that would be replaced with actual XDR
+                  const stalledTx = {
+                    id: `speedup-${txState.txHash}`,
+                    innerTxXdr: txState.txHash, // Placeholder - actual implementation would store XDR
+                    description: 'Pending Transaction',
+                    submittedAt: new Date(Date.now() - 20000).toISOString(),
+                    projectId: projectId,
+                  };
+                  setStalledTransaction(stalledTx);
+                }}
+                className="mt-2 w-full border-rose-500/30 text-rose-400 hover:bg-rose-500/10 rounded-xl text-xs py-2"
+              >
+                ⚡ Speed Up Transaction
+              </Button>
+            )}
           </div>
         </div>
       )}
