@@ -18,6 +18,7 @@ import { ProjectCardSkeletonList } from '@/components/skeletons';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import { useTokenBalance, useTokenBalances, getBalanceShortfall } from '@/hooks/useCreateProjectForm';
 import { TokenSelector } from '@/components/TokenSelector';
+import { CurrencyAmountInput } from '@/components/CurrencyAmountInput';
 import { usePersistentTab } from '@/hooks/usePersistentTab';
 import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { LiquidityDepthOptimizer } from '@/components/LiquidityDepthOptimizer';
@@ -1407,14 +1408,12 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                   </label>
                   <CurrencyAmountInput
                     token={formToken}
-                    min={0}
-                    step="any"
                     value={formBudget}
-                    onValueChange={setFormBudget}
+                    onChange={(raw) =>
+                      setFormBudget(raw === '' ? '' : Number(raw))
+                    }
                     placeholder="900"
-                    data-testid="client-budget-input"
-                    badgeTestId="client-budget-prefix"
-                    inputClassName="w-full py-3 pr-4 bg-[#232326] border border-[#333338] rounded-xl text-white text-sm placeholder-[#71717a] focus:outline-none focus:border-blue-500 transition-colors"
+                    label={`Total budget in ${formToken}`}
                   />
                 </div>
 
